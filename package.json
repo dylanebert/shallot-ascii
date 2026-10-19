@@ -1,0 +1,43 @@
+{
+    "name": "@dylanebert/shallot-ascii",
+    "version": "0.1.0",
+    "description": "Camera-local bitmap ASCII post-processing for Shallot.",
+    "license": "MIT",
+    "author": "Dylan Ebert <dylan.ebert@gmail.com>",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/dylanebert/shallot-ascii.git"
+    },
+    "homepage": "https://github.com/dylanebert/shallot-ascii",
+    "bugs": "https://github.com/dylanebert/shallot-ascii/issues",
+    "keywords": [
+        "ascii",
+        "shallot-plugin"
+    ],
+    "type": "module",
+    "sideEffects": false,
+    "packageManager": "bun@1.4.3",
+    "engines": {
+        "bun": ">=1.4.3"
+    },
+    "exports": {
+        ".": "./src/index.ts"
+    },
+    "files": [
+        "src",
+        "!src/**/*.test.ts"
+    ],
+    "scripts": {
+        "lint": "biome check",
+        "test": "bun test"
+    },
+    "peerDependencies": {
+        "@dylanebert/shallot": "^0.10.0"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.13",
+        "@dylanebert/shallot": "0.10.0",
+        "@types/bun": "^1.4.3",
+        "webgpu": "^0.6.2"
+    }
+}
