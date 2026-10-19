@@ -8,10 +8,12 @@
         "@biomejs/biome": "^2.5.13",
         "@dylanebert/shallot": "0.10.0",
         "@types/bun": "^1.4.3",
+        "typegpu": "~0.12.8",
         "webgpu": "^0.6.2",
       },
       "peerDependencies": {
         "@dylanebert/shallot": "^0.10.0",
+        "typegpu": "~0.12.8",
       },
     },
   },

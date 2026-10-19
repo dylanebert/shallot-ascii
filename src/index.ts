@@ -1,8 +1,9 @@
-import { Camera, component, type Plugin, u32 } from "@dylanebert/shallot";
+import { Camera, component, type Plugin, u32, type World } from "@dylanebert/shallot";
 import {
     CorePipelinePlugin,
     type EffectPass,
     EffectPasses,
+    fullscreenVertex,
     TonemappingSystem,
     Views,
 } from "@dylanebert/shallot/rendering";
@@ -14,26 +15,30 @@ import {
     setRenderBindGroup,
     setRenderPipeline,
 } from "@dylanebert/shallot/runtime";
+import tgpu from "typegpu";
+import * as d from "typegpu/data";
 import { ramp } from "./ramp";
 
 /** Opt a camera into bitmap ASCII. cellSize is in physical target pixels, minimum 1. */
 export const Ascii = component("Ascii", { cellSize: u32 }, { defaults: () => ({ cellSize: 8 }) });
 
-const shader = `
-@group(0) @binding(0) var image: texture_2d<f32>;
-@group(0) @binding(1) var<uniform> cellSize: u32;
-const rows = array<u32, ${ramp.length * 8}>(${ramp
-    .flatMap((g) => g.rows)
-    .map((n) => `${n}u`)
-    .join(",")});
-@vertex fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-    let p = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
-    return vec4f(p[i], 0, 1);
-}
-@fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-    let pixel = vec2u(position.xy);
+const layout = tgpu
+    .bindGroupLayout({
+        image: {
+            texture: d.texture2d(d.f32),
+            sampleType: "unfilterable-float",
+            visibility: ["fragment"],
+        },
+        cellSize: { uniform: d.u32, visibility: ["fragment"] },
+    })
+    .$idx(0);
+// The reduction renders one pixel per cell, so each source pixel contributes only once.
+const mean = tgpu.fn(
+    [d.vec4f, d.texture2d(d.f32), d.u32],
+    d.vec4f,
+)(`(position: vec4f, image: texture_2d<f32>, cellSize: u32) -> vec4f {
     let size = max(cellSize, 1u);
-    let origin = pixel / size * size;
+    let origin = vec2u(position.xy) * size;
     let end = min(origin + vec2u(size), textureDimensions(image));
     var color = vec3f(0);
     for (var y = origin.y; y < end.y; y++) {
@@ -42,21 +47,146 @@ const rows = array<u32, ${ramp.length * 8}>(${ramp
         }
     }
     color /= f32((end.x-origin.x)*(end.y-origin.y));
+    return vec4f(color, 1);
+}`);
+const glyph = tgpu.fn(
+    [d.vec4f, d.texture2d(d.f32), d.u32],
+    d.vec4f,
+)(`(position: vec4f, image: texture_2d<f32>, cellSize: u32) -> vec4f {
+    const rows = array<u32, ${ramp.length * 8}>(${ramp
+        .flatMap((g) => g.rows)
+        .map((n) => `${n}u`)
+        .join(",")});
+    let pixel = vec2u(position.xy);
+    let size = max(cellSize, 1u);
+    let color = textureLoad(image, pixel / size, 0).rgb;
     let luma = clamp(dot(color, vec3f(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    let glyph = min(u32(luma * ${ramp.length}.0), ${ramp.length - 1}u);
-    let local = (pixel-origin) * 8u / size;
-    let ink = (rows[glyph*8u+local.y] >> local.x) & 1u;
+    let index = min(u32(luma * ${ramp.length}.0), ${ramp.length - 1}u);
+    let local = (pixel % size) * 8u / size;
+    let ink = (rows[index*8u+local.y] >> local.x) & 1u;
     return vec4f(color * f32(ink), 1);
-}`;
+}`);
+const meanFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, out: d.vec4f })(
+    (input) => {
+        "use gpu";
+        return mean(input.position, layout.$.image, layout.$.cellSize);
+    },
+);
+const glyphFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, out: d.vec4f })(
+    (input) => {
+        "use gpu";
+        return glyph(input.position, layout.$.image, layout.$.cellSize);
+    },
+);
+interface CameraState {
+    buffer: GPUBuffer;
+    bytes: Uint32Array;
+    effect: EffectPass;
+    means: GPUTexture | null;
+    meanSize: number;
+}
 const stateKey = {
     create: () => ({
         layout: null as GPUBindGroupLayout | null,
+        reduction: null as GPURenderPipeline | null,
         pipelines: new Map<GPUTextureFormat, GPURenderPipeline>(),
-        cameras: new Map<number, { buffer: GPUBuffer; effect: EffectPass }>(),
+        cameras: new Map<number, CameraState>(),
+        pass: {
+            label: "ascii",
+            colorAttachments: [{ view: null!, loadOp: "clear", storeOp: "store" }],
+        } as GPURenderPassDescriptor,
     }),
 };
+type AsciiState = ReturnType<typeof stateKey.create>;
 const cameras = [Camera, Ascii];
 
+// Keep effect construction outside the update's closure, as in Vignette.
+function createCamera(world: World, state: AsciiState): CameraState {
+    const buffer = world.gpu.root.unwrap(
+        world.gpu.root.createBuffer(d.u32).$usage("uniform").$name("ascii-settings"),
+    );
+    let groups = new WeakMap<GPUTextureView, GPUBindGroup>();
+    let meanView: GPUTextureView;
+    let glyphGroup: GPUBindGroup;
+    const camera: CameraState = {
+        buffer,
+        bytes: new Uint32Array(1),
+        effect: null!,
+        means: null,
+        meanSize: 0,
+    };
+    camera.effect = (w, _eid, view, input, output) => {
+        const size = camera.bytes[0];
+        const width = Math.ceil(view.width / size);
+        const height = Math.ceil(view.height / size);
+        if (
+            !camera.means ||
+            camera.means.width !== width ||
+            camera.means.height !== height ||
+            camera.meanSize !== size
+        ) {
+            camera.means?.destroy();
+            // Float32 preserves the reduction for luma thresholds without half-float quantization.
+            camera.means = w.gpu.device.createTexture({
+                size: [width, height],
+                format: "rgba32float",
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+            });
+            camera.meanSize = size;
+            meanView = camera.means.createView();
+            glyphGroup = w.gpu.device.createBindGroup({
+                layout: state.layout!,
+                entries: [
+                    { binding: 0, resource: meanView },
+                    { binding: 1, resource: { buffer } },
+                ],
+            });
+            groups = new WeakMap();
+        }
+        let group = groups.get(input);
+        if (!group) {
+            group = w.gpu.device.createBindGroup({
+                layout: state.layout!,
+                entries: [
+                    { binding: 0, resource: input },
+                    { binding: 1, resource: { buffer } },
+                ],
+            });
+            groups.set(input, group);
+        }
+        const attachment = (state.pass.colorAttachments as GPURenderPassColorAttachment[])[0];
+        attachment.view = meanView;
+        let pass = beginRenderPass(w.frameEncoder()!, state.pass);
+        setRenderPipeline(pass, state.reduction!);
+        setRenderBindGroup(pass, 0, group);
+        draw(pass, 3);
+        endRenderPass(pass);
+        attachment.view = output;
+        pass = beginRenderPass(w.frameEncoder()!, state.pass);
+        const format =
+            output === view.present ? navigator.gpu.getPreferredCanvasFormat() : "rgba8unorm";
+        setRenderPipeline(pass, state.pipelines.get(format)!);
+        setRenderBindGroup(pass, 0, glyphGroup);
+        draw(pass, 3);
+        endRenderPass(pass);
+    };
+    return camera;
+}
+function removeCamera(world: World, eid: number, camera: CameraState) {
+    const stack = world.resource(EffectPasses).get(eid)?.after;
+    const index = stack?.indexOf(camera.effect) ?? -1;
+    if (index >= 0) stack!.splice(index, 1);
+    camera.buffer.destroy();
+    camera.means?.destroy();
+    world.resource(stateKey).cameras.delete(eid);
+}
+function pruneCamera(this: World, camera: CameraState, eid: number) {
+    if (this.has(eid, Camera) && this.has(eid, Ascii) && this.resource(Views).has(eid)) return;
+    removeCamera(this, eid, camera);
+}
+function disposeCamera(this: World, camera: CameraState, eid: number) {
+    removeCamera(this, eid, camera);
+}
 export const AsciiPlugin: Plugin = {
     name: "Ascii",
     gpu: {},
@@ -75,38 +205,7 @@ export const AsciiPlugin: Plugin = {
                     if (!views.has(eid)) continue;
                     let camera = state.cameras.get(eid);
                     if (!camera) {
-                        const buffer = world.gpu.device.createBuffer({
-                            size: 16,
-                            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-                        });
-                        const groups = new WeakMap<GPUTextureView, GPUBindGroup>();
-                        const effect: EffectPass = (w, _eid, view, input, output) => {
-                            let group = groups.get(input);
-                            if (!group) {
-                                group = w.gpu.device.createBindGroup({
-                                    layout: state.layout!,
-                                    entries: [
-                                        { binding: 0, resource: input },
-                                        { binding: 1, resource: { buffer } },
-                                    ],
-                                });
-                                groups.set(input, group);
-                            }
-                            const format =
-                                output === view.present
-                                    ? navigator.gpu.getPreferredCanvasFormat()
-                                    : "rgba8unorm";
-                            const pass = beginRenderPass(w.frameEncoder()!, {
-                                colorAttachments: [
-                                    { view: output, loadOp: "clear", storeOp: "store" },
-                                ],
-                            });
-                            setRenderPipeline(pass, state.pipelines.get(format)!);
-                            setRenderBindGroup(pass, 0, group);
-                            draw(pass, 3);
-                            endRenderPass(pass);
-                        };
-                        camera = { buffer, effect };
+                        camera = createCamera(world, state);
                         state.cameras.set(eid, camera);
                     }
                     let stack = effects.get(eid);
@@ -115,61 +214,48 @@ export const AsciiPlugin: Plugin = {
                         effects.set(eid, stack);
                     }
                     if (!stack.after.includes(camera.effect)) stack.after.push(camera.effect);
-                    world.gpu.device.queue.writeBuffer(
-                        camera.buffer,
-                        0,
-                        new Uint32Array([Math.max(1, world.storage(Ascii).cellSize.get(eid))]),
-                    );
+                    const size = Math.max(1, world.storage(Ascii).cellSize.get(eid));
+                    if (camera.bytes[0] !== size) {
+                        camera.bytes[0] = size;
+                        world.gpu.device.queue.writeBuffer(camera.buffer, 0, camera.bytes);
+                    }
                 }
-                for (const [eid, camera] of state.cameras) {
-                    if (world.has(eid, Camera) && world.has(eid, Ascii) && views.has(eid)) continue;
-                    const stack = effects.get(eid)?.after;
-                    const index = stack?.indexOf(camera.effect) ?? -1;
-                    if (index >= 0) stack!.splice(index, 1);
-                    camera.buffer.destroy();
-                    state.cameras.delete(eid);
-                }
+                state.cameras.forEach(pruneCamera, world);
             },
         },
     ],
     async warm(world) {
         const state = world.resource(stateKey);
-        const device = world.gpu.device;
-        state.layout = device.createBindGroupLayout({
-            entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.FRAGMENT,
-                    texture: { sampleType: "float" },
-                },
-                { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-            ],
-        });
-        const module = device.createShaderModule({ code: shader });
-        const layout = device.createPipelineLayout({ bindGroupLayouts: [state.layout] });
+        const root = world.gpu.root;
+        state.layout = root.unwrap(layout);
+        state.reduction = root.unwrap(
+            root.createRenderPipeline({
+                vertex: fullscreenVertex,
+                fragment: meanFragment,
+                targets: { format: "rgba32float" },
+            }),
+        );
+        precompile(world, "ascii-mean", () => [state.reduction!]);
         for (const format of new Set<GPUTextureFormat>([
             "rgba8unorm",
             navigator.gpu.getPreferredCanvasFormat(),
         ])) {
-            const pipeline = device.createRenderPipeline({
-                layout,
-                vertex: { module, entryPoint: "vertex" },
-                fragment: { module, entryPoint: "fragment", targets: [{ format }] },
-            });
+            const pipeline = root.unwrap(
+                root.createRenderPipeline({
+                    vertex: fullscreenVertex,
+                    fragment: glyphFragment,
+                    targets: { format },
+                }),
+            );
             state.pipelines.set(format, pipeline);
             precompile(world, `ascii-${format}`, () => [pipeline]);
         }
     },
     dispose(world) {
         const state = world.resource(stateKey);
-        for (const [eid, camera] of state.cameras) {
-            const stack = world.resource(EffectPasses).get(eid)?.after;
-            const index = stack?.indexOf(camera.effect) ?? -1;
-            if (index >= 0) stack!.splice(index, 1);
-            camera.buffer.destroy();
-        }
-        state.cameras.clear();
+        state.cameras.forEach(disposeCamera, world);
         state.pipelines.clear();
         state.layout = null;
+        state.reduction = null;
     },
 };

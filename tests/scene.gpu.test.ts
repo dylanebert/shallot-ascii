@@ -1,4 +1,4 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
     Camera,
     Materials,
@@ -144,6 +144,43 @@ test("camera ASCII matches cell means, luma ramp and upright bitmaps including p
         app.world.step(0);
         expect((await captureTexture(app.world, cameras[0])).rgba).toEqual(ascii.rgba);
     } finally {
+        app.dispose();
+    }
+});
+
+test("ASCII settings upload only when cellSize changes and draws reuse their descriptor", async () => {
+    const { app, cameras } = await fixture(true);
+    const writes = spyOn(
+        Object.getPrototypeOf(app.world.gpu.device.queue) as GPUQueue,
+        "writeBuffer",
+    );
+    const encoder = app.world.gpu.device.createCommandEncoder();
+    const passes = spyOn(Object.getPrototypeOf(encoder) as GPUCommandEncoder, "beginRenderPass");
+    const settingsWrites = () =>
+        writes.mock.calls.filter((call) => call[0].label === "ascii-settings");
+    try {
+        app.world.step(0);
+        expect(settingsWrites()).toHaveLength(1);
+        const buffer = settingsWrites()[0][0];
+        writes.mockClear();
+        for (let i = 0; i < 4; i++) app.world.step(0);
+        expect(settingsWrites()).toHaveLength(0);
+        app.world.storage(Ascii).cellSize.set(cameras[0], size + 1);
+        app.world.step(0);
+        expect(settingsWrites()).toHaveLength(1);
+        expect(settingsWrites()[0][0]).toBe(buffer);
+        expect(Array.from(settingsWrites()[0][2] as Uint32Array)).toEqual([size + 1]);
+        writes.mockClear();
+        for (let i = 0; i < 4; i++) app.world.step(0);
+        expect(settingsWrites()).toHaveLength(0);
+        const descriptors = passes.mock.calls
+            .map((call) => call[0])
+            .filter((descriptor) => descriptor.label === "ascii");
+        expect(descriptors.length).toBeGreaterThanOrEqual(18);
+        expect(new Set(descriptors).size).toBe(1);
+    } finally {
+        passes.mockRestore();
+        writes.mockRestore();
         app.dispose();
     }
 });
