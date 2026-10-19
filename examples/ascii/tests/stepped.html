@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8" /><title>ASCII, stepped</title><style>body{margin:0;background:#191816}canvas{display:block}</style></head>
+<body><canvas width="1280" height="720"></canvas><script type="module">
+import { createApp } from '@dylanebert/shallot';
+import { captureFrame } from '@dylanebert/shallot/rendering';
+import { Welcome } from '../src/scene';
+const app = await createApp({ plugins: [Welcome] });
+app.world.step(1/60);
+app.world.step(1/60);
+window.captureAscii = async () => {
+    const pending = captureFrame(document.querySelector('canvas'));
+    app.world.step(0);
+    const frame = await pending;
+    const output = document.createElement('canvas');
+    output.width = frame.width;
+    output.height = frame.height;
+    output.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height), 0, 0);
+    return output.toDataURL('image/png');
+};
+window.ready = true;
+</script></body>
+</html>
