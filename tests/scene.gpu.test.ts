@@ -23,8 +23,21 @@ setDefaultTimeout(TIMEOUT.gpu);
 const width = 71,
     height = 59,
     size = 9;
-// Independent selector and bitmap addressing, using only the upstream font data.
+// font8x8_box.h U+2502, U+2571, U+2500, U+2572: tangents of 0°, 45°, 90°, 135° gradients.
+const box = [
+    [0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08],
+    [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01],
+    [0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00],
+    [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
+];
+const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+// Independent selector, edge gate and bitmap addressing, using only the upstream font data.
+// Cells whose decision lies within float rounding of a threshold are returned as ambiguous.
 function reference(input: Uint8ClampedArray) {
+    const w = width,
+        h = height,
+        s = size,
+        gate = 0.02;
     const glyphs = font
         .map((rows, i) => ({
             rows,
@@ -34,32 +47,82 @@ function reference(input: Uint8ClampedArray) {
                 0,
             ),
         }))
-        .filter((glyph) => " .:-=+*#%@".includes(String.fromCharCode(glyph.i + 32)))
+        .filter((glyph) => " .:+*XZ0".includes(String.fromCharCode(glyph.i + 32)))
         .sort((a, b) => a.ink - b.ink || a.i - b.i);
+    const at = (x: number, y: number, c: number) =>
+        input[(Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))) * 4 + c] /
+        255;
     const out = new Uint8Array(input.length);
-    for (let cy = 0; cy < height; cy += size)
-        for (let cx = 0; cx < width; cx += size) {
-            const endX = Math.min(cx + size, width),
-                endY = Math.min(cy + size, height);
+    const ambiguous: [number, number][] = [];
+    const edgesDrawn: number[] = [];
+    for (let cy = 0; cy < h; cy += s)
+        for (let cx = 0; cx < w; cx += s) {
+            const endX = Math.min(cx + s, w),
+                endY = Math.min(cy + s, h);
             const mean = [0, 0, 0];
+            let jxx = 0,
+                jyy = 0,
+                jxy = 0;
             for (let y = cy; y < endY; y++)
                 for (let x = cx; x < endX; x++)
-                    for (let c = 0; c < 3; c++) mean[c] += input[(y * width + x) * 4 + c] / 255;
+                    for (let c = 0; c < 3; c++) {
+                        mean[c] += at(x, y, c);
+                        const gx =
+                            (at(x + 1, y - 1, c) +
+                                2 * at(x + 1, y, c) +
+                                at(x + 1, y + 1, c) -
+                                at(x - 1, y - 1, c) -
+                                2 * at(x - 1, y, c) -
+                                at(x - 1, y + 1, c)) /
+                            4;
+                        const gy =
+                            (at(x - 1, y + 1, c) +
+                                2 * at(x, y + 1, c) +
+                                at(x + 1, y + 1, c) -
+                                at(x - 1, y - 1, c) -
+                                2 * at(x, y - 1, c) -
+                                at(x + 1, y - 1, c)) /
+                            4;
+                        jxx += gx * gx;
+                        jyy += gy * gy;
+                        jxy += gx * gy;
+                    }
             for (let c = 0; c < 3; c++) mean[c] /= (endX - cx) * (endY - cy);
             const luma = mean[0] * 0.2126 + mean[1] * 0.7152 + mean[2] * 0.0722;
-            const rows = glyphs[Math.min(Math.floor(luma * glyphs.length), glyphs.length - 1)].rows;
+            const strength = (jxx + jyy) / s;
+            const angle = (0.5 * Math.atan2(2 * jxy, jxx - jyy)) / (Math.PI / 4);
+            const curve = Math.sqrt(Math.max(0, luma - 0.1) / 0.9);
+            const dither = (bayer[((cy / s) % 4) * 4 + ((cx / s) % 4)] + 0.5) / 16 - 0.5;
+            const step = curve * glyphs.length + 3 * dither;
+            const near = (v: number) => Math.abs(v) < 1e-4;
+            if (
+                near(luma - 0.1) ||
+                (luma >= 0.1 && near(strength - gate)) ||
+                (strength > gate && luma >= 0.1 && near(Math.abs(angle % 1) - 0.5)) ||
+                (luma >= 0.1 && strength <= gate && near(step - Math.round(step)))
+            )
+                ambiguous.push([cx / s, cy / s]);
+            let rows: number[] = Array(8).fill(0);
+            if (strength > gate && luma >= 0.1) {
+                const edge = ((Math.round(angle) % 4) + 4) % 4;
+                edgesDrawn.push(edge);
+                rows = box[edge];
+            } else if (luma >= 0.1)
+                rows = glyphs[Math.min(Math.max(Math.floor(step), 0), glyphs.length - 1)].rows;
+            const peak = Math.max(...mean);
             for (let y = cy; y < endY; y++)
                 for (let x = cx; x < endX; x++) {
                     const ink =
-                        (rows[Math.floor(((y - cy) * 8) / size)] >>
-                            Math.floor(((x - cx) * 8) / size)) &
+                        (rows[Math.floor(((y - cy) * 8) / s)] >> Math.floor(((x - cx) * 8) / s)) &
                         1;
                     for (let c = 0; c < 3; c++)
-                        out[(y * width + x) * 4 + c] = Math.round(mean[c] * 255) * ink;
-                    out[(y * width + x) * 4 + 3] = 255;
+                        out[(y * w + x) * 4 + c] = ink
+                            ? Math.round((mean[c] / Math.sqrt(peak)) * 255)
+                            : 0;
+                    out[(y * w + x) * 4 + 3] = 255;
                 }
         }
-    return out;
+    return { out, ambiguous, edgesDrawn };
 }
 async function fixture(withAscii: boolean) {
     const cameras: number[] = [];
@@ -113,7 +176,7 @@ async function fixture(withAscii: boolean) {
     });
     return { app, cameras };
 }
-test("camera ASCII matches cell means, luma ramp and upright bitmaps including partial edges", async () => {
+test("camera ASCII matches cell means, edge gate, dithered luma ramp and upright bitmaps including partial edges", async () => {
     const { app, cameras } = await fixture(true);
     try {
         app.world.step(0);
@@ -122,7 +185,9 @@ test("camera ASCII matches cell means, luma ramp and upright bitmaps including p
             cameras.map((eid) => captureTexture(app.world, eid)),
         );
         expect(new Set(plain.rgba).size).toBeGreaterThan(8);
-        const expected = reference(plain.rgba);
+        const { out: expected, ambiguous, edgesDrawn } = reference(plain.rgba);
+        expect(ambiguous).toEqual([]);
+        expect(edgesDrawn.length).toBeGreaterThan(0);
         let maxError = 0;
         for (let i = 0; i < expected.length; i++)
             maxError = Math.max(maxError, Math.abs(ascii.rgba[i] - expected[i]));
@@ -166,7 +231,7 @@ test("Filled matches the independent asciicker table and resolve, cell for cell"
         app.world.storage(Ascii).style.set(cameras[0], AsciiStyle.Silhouette);
         app.world.step(0);
         const silhouette = await captureTexture(app.world, cameras[0]);
-        const expected = reference(plain.rgba);
+        const { out: expected } = reference(plain.rgba);
         expect(silhouette.rgba.every((v, i) => Math.abs(v - expected[i]) <= 1)).toBe(true);
     } finally {
         app.dispose();

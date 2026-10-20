@@ -18,7 +18,7 @@ import {
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import { createAutoMat, filledBody } from "./filled";
-import { ramp } from "./ramp";
+import { edges, ramp } from "./ramp";
 
 export enum AsciiStyle {
     Silhouette,
@@ -42,23 +42,47 @@ const layout = tgpu
         table: { storage: d.arrayOf(d.u32, 32768), access: "readonly", visibility: ["fragment"] },
     })
     .$idx(0);
+// Rec. 709 luma below black draws blank; the clear colour of examples/ascii sits under it.
+const black = 0.1;
+// Colour-edge gate: Sobel/4 structure-tensor energy per cell row, about a 0.06 grey step.
+const edgeGate = 0.02;
 // The reduction renders one pixel per cell, so each source pixel contributes only once.
+// Alpha carries the cell's edge: 0 none, else 1 + the quantized gradient angle.
 const mean = tgpu.fn(
     [d.vec4f, d.texture2d(d.f32), d.u32],
     d.vec4f,
 )(`(position: vec4f, image: texture_2d<f32>, cellSize: u32) -> vec4f {
     let size = max(cellSize, 1u);
+    let dims = textureDimensions(image);
+    let last = vec2i(dims) - 1;
     let origin = vec2u(position.xy) * size;
-    let end = min(origin + vec2u(size), textureDimensions(image));
+    let end = min(origin + vec2u(size), dims);
     var color = vec3f(0);
+    var j = vec3f(0);
     for (var y = origin.y; y < end.y; y++) {
         for (var x = origin.x; x < end.x; x++) {
-            color += textureLoad(image, vec2u(x,y), 0).rgb;
+            let p = vec2i(i32(x), i32(y));
+            var n: array<vec3f, 9>;
+            for (var k = 0; k < 9; k++) {
+                n[k] = textureLoad(image, clamp(p + vec2i(k % 3 - 1, k / 3 - 1), vec2i(0), last), 0).rgb;
+            }
+            color += n[4];
+            let gx = (n[2] + 2.0 * n[5] + n[8] - n[0] - 2.0 * n[3] - n[6]) * 0.25;
+            let gy = (n[6] + 2.0 * n[7] + n[8] - n[0] - 2.0 * n[1] - n[2]) * 0.25;
+            j += vec3f(dot(gx, gx), dot(gy, gy), dot(gx, gy));
         }
     }
     color /= f32((end.x-origin.x)*(end.y-origin.y));
-    return vec4f(color, 1);
+    var edge = 0.0;
+    if ((j.x + j.y) / f32(size) > ${edgeGate} && dot(color, vec3f(0.2126, 0.7152, 0.0722)) >= ${black}) {
+        let angle = 0.5 * atan2(2.0 * j.z, j.x - j.y);
+        edge = f32((i32(round(angle / 0.7853981633974483)) + 4) % 4 + 1);
+    }
+    return vec4f(color, edge);
 }`);
+// A cell edge draws its tangent glyph. Otherwise sqrt-curved luma above black, offset by a
+// 4x4 Bayer dither spanning three ramp steps, picks the ramp glyph. Ink carries the cell colour
+// lifted to the square root of its brightest channel.
 const glyph = tgpu.fn(
     [d.vec4f, d.texture2d(d.f32), d.u32],
     d.vec4f,
@@ -67,14 +91,30 @@ const glyph = tgpu.fn(
         .flatMap((g) => g.rows)
         .map((n) => `${n}u`)
         .join(",")});
+    const edges = array<u32, 32>(${edges
+        .flat()
+        .map((n) => `${n}u`)
+        .join(",")});
+    const bayer = array<f32, 16>(0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
     let pixel = vec2u(position.xy);
     let size = max(cellSize, 1u);
-    let color = textureLoad(image, pixel / size, 0).rgb;
+    let cellPosition = pixel / size;
+    let cell = textureLoad(image, cellPosition, 0);
+    let color = cell.rgb;
     let luma = clamp(dot(color, vec3f(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    let index = min(u32(luma * ${ramp.length}.0), ${ramp.length - 1}u);
     let local = (pixel % size) * 8u / size;
-    let ink = (rows[index*8u+local.y] >> local.x) & 1u;
-    return vec4f(color * f32(ink), 1);
+    var row = 0u;
+    if (cell.a > 0.5) {
+        row = edges[(u32(cell.a) - 1u) * 8u + local.y];
+    } else if (luma >= ${black}) {
+        let curve = sqrt((luma - ${black}) / ${1 - black});
+        let dither = (bayer[cellPosition.y % 4u * 4u + cellPosition.x % 4u] + 0.5) / 16.0 - 0.5;
+        let index = u32(clamp(floor(curve * ${ramp.length}.0 + 3.0 * dither), 0.0, ${ramp.length - 1}.0));
+        row = rows[index * 8u + local.y];
+    }
+    let ink = (row >> local.x) & 1u;
+    let peak = max(max(color.r, color.g), color.b);
+    return vec4f(select(vec3f(0), color / sqrt(peak), ink == 1u && peak > 0.0), 1);
 }`);
 const meanFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, out: d.vec4f })(
     (input) => {

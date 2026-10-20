@@ -8,9 +8,11 @@ Run checks narrow to wide:
 bun test tests/ramp.test.ts
 bun test tests/scene.gpu.test.ts -t 'settings upload'
 bun test tests/scene.gpu.test.ts
+bun test tests/edges.gpu.test.ts
 bun test ./examples/ascii/src/scene/scene.gpu.test.ts
 bun test ./examples/ascii/tests/glyphs.node.ts
 bunx playwright test -c examples/ascii --workers=1
+bun scripts/measure-silhouette.ts <ascii-city-live.png> test-results/*/ascii.png
 bun check
 bun run lint
 bun run test
@@ -20,6 +22,8 @@ bun run test
 
 The GPU tests use headless Dawn through Shallot's public GPU testing helper (`webgpu`). On Linux install `mesa-vulkan-drivers` for software Vulkan, as CI does. No browser or window is needed.
 
-The GPU oracle computes cell means, luma selection and bitmap addressing independently from captured unprocessed pixels. Keep its varied colours, partial edge cells, and no-component camera comparison when changing the pass.
+The GPU oracle computes cell means, the colour-edge gate and angle, dithered luma selection and bitmap addressing independently from captured unprocessed pixels, and fails if a cell's decision sits within float rounding of a threshold. Keep its varied colours, partial edge cells, and no-component camera comparison when changing the pass. `tests/edges.gpu.test.ts` holds each straight boundary at 0°, 45°, 90° and 135° to one 8-connected run of its tangent glyph.
+
+`scripts/measure-silhouette.ts` measures `reference/taste/captures/ascii-city-live.png` (kex) and the example's Playwright frame the same way over each image's cell grid and exits non-zero when the frame leaves the bounds it names from the capture, each bounded measure within ±30% of the capture's value.
 
 The settings check observes zero settings uploads over steady frames, one upload after changing `cellSize`, reuse of its buffer, and reuse of the render-pass descriptor. It is not a general heap-allocation oracle.
