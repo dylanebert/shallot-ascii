@@ -4,6 +4,7 @@
 // The frame's grid is its cell size from the origin; the capture's is fitted.
 //   bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> <plain.png> [cellSize=8]
 import { inflateSync } from "node:zlib";
+import { ramp } from "../src/ramp";
 
 interface Image {
     width: number;
@@ -454,6 +455,49 @@ function straightBoundary(colours: number[][], size: number) {
     return [2, 3, 1, 4][step];
 }
 
+/**
+ * Second review's controls. Sparse: every inked fill cell becomes two pixels in its own ink
+ * colour, placed by cell position. Quartered: every channel divided by four.
+ */
+export function sparseControl(image: Image, size: number): Image {
+    const rgb = image.rgb.slice();
+    const boxes = Object.values(box).map((rows) => rows.join());
+    for (let cy = 0; cy + size <= image.height; cy += size)
+        for (let cx = 0; cx + size <= image.width; cx += size) {
+            const rows: number[] = [];
+            let colour: number[] | undefined;
+            for (let y = 0; y < size; y++) {
+                let row = 0;
+                for (let x = 0; x < size; x++) {
+                    const p = ((cy + y) * image.width + cx + x) * 3;
+                    if (rgb[p] + rgb[p + 1] + rgb[p + 2]) {
+                        row |= 1 << x;
+                        colour = [rgb[p], rgb[p + 1], rgb[p + 2]];
+                    }
+                }
+                rows.push(row);
+            }
+            if (!colour || boxes.includes(rows.join())) continue;
+            for (let y = 0; y < size; y++)
+                rgb.fill(
+                    0,
+                    ((cy + y) * image.width + cx) * 3,
+                    ((cy + y) * image.width + cx + size) * 3,
+                );
+            const x = (cx / size) % 4,
+                y = (cy / size) % 4;
+            for (const [px, py] of [
+                [x, y],
+                [x + 4, y + 4],
+            ])
+                rgb.set(colour, ((cy + py) * image.width + cx + px) * 3);
+        }
+    return { ...image, rgb };
+}
+export function quarterControl(image: Image): Image {
+    return { ...image, rgb: image.rgb.map((v) => v >> 2) };
+}
+
 /** The reviewer's control: each cell keeps its brightest ink pixel, other ink set to 25 grey. */
 export function dimControl(image: Image, size: number): Image {
     const rgb = image.rgb.slice();
@@ -482,10 +526,25 @@ export function dimControl(image: Image, size: number): Image {
 
 // The rule's black point: plain cells under this Rec. 709 luma draw no ink.
 const black = 0.12;
-// Lit: the lowest luma whose dithered ramp index, sqrt((luma - 0.12) / 0.88) * 8 less the
-// dither's 1.4-step reach, stays at least 1, so a lit cell can't dither to blank.
-const lit = 0.2;
-// The 4x4 dither's period: a flat face repeats one glyph at most this many cells in a row.
+// The rule's ramp index is floor(sqrt((luma - black) / (1 - black)) * n + 3 * bayer), and the
+// 4x4 dither reaches 3 * (0.5 - 1/32) steps down. The lowest luma at which every dithered index
+// reaches at least `index`:
+const ditherReach = 3 * (0.5 - 1 / 32);
+const lumaFor = (index: number) => black + (1 - black) * ((index + ditherReach) / ramp.length) ** 2;
+// Lit: no dithered index reaches blank (0.200).
+const lit = lumaFor(1);
+// Density follows luma: a lit fill cell whose luma guarantees index k inks at least ramp[k]'s
+// share of the cell. From luma 0.522 that is the ramp's dense half, `*XZ0`, at least `*`'s 24
+// of 64 pixels.
+const dense = lumaFor(ramp.length / 2);
+const guaranteedInk = (l: number) => {
+    let k = 0;
+    while (k + 1 < ramp.length && l >= lumaFor(k + 1)) k++;
+    return ramp[k].ink / 64;
+};
+// Fill ink is the cell's plain mean colour: within 1.5 of 255 per channel, the output's rounding
+// and float headroom.
+const colourTolerance = 1.5;
 const ditherPeriod = 4;
 
 /** The row's observables on our frame, read against the frame without Ascii. */
@@ -532,7 +591,13 @@ export function observables(frame: Image, plain: Image, size: number) {
         litInked = 0,
         longestRun = 0,
         edgeCells = 0,
-        edgeBrighter = 0;
+        edgeBrighter = 0,
+        fillCells = 0,
+        fillColourHeld = 0,
+        denseCells = 0,
+        denseHeld = 0,
+        gradedCells = 0,
+        gradedHeld = 0;
     for (let k = 0; k < I * J; k++) {
         const m = means[k],
             ink = inks[k];
@@ -544,8 +609,22 @@ export function observables(frame: Image, plain: Image, size: number) {
             litCells++;
             if (ink.length) litInked++;
         }
+        if (!kinds[k] && luma(m) >= lit) {
+            gradedCells++;
+            const held = ink.length >= guaranteedInk(luma(m)) * size * size;
+            if (held) gradedHeld++;
+            if (luma(m) >= dense) {
+                denseCells++;
+                if (held) denseHeld++;
+            }
+        }
         if (!ink.length) continue;
         inked++;
+        if (!kinds[k]) {
+            fillCells++;
+            if (ink.every((p) => p.every((v, c) => Math.abs(v - m[c]) <= colourTolerance)))
+                fillColourHeld++;
+        }
         // Every ink pixel is the cell's plain colour scaled: within 1.5 of 255 per channel.
         const top = Math.max(...m);
         if (ink.every((p) => p.every((v, c) => Math.abs(v - (m[c] * Math.max(...p)) / top) <= 1.5)))
@@ -596,6 +675,16 @@ export function observables(frame: Image, plain: Image, size: number) {
         blackGround: { darkCells: dark, inked: darkInked },
         chromaticity: { inkedCells: inked, held: round(chromaHeld / Math.max(1, inked)) },
         litInked: { litCells, inked: round(litInked / Math.max(1, litCells)) },
+        fillColour: { fillCells, held: round(fillColourHeld / Math.max(1, fillCells)) },
+        densityFollowsLuma: {
+            litFillCells: gradedCells,
+            held: round(gradedHeld / Math.max(1, gradedCells)),
+            denseHalf: {
+                luma: round(dense),
+                cells: denseCells,
+                held: round(denseHeld / Math.max(1, denseCells)),
+            },
+        },
         longestFlatRun: longestRun,
         boundaries: boundaryCoverage(frame, plain, size),
         edgeBrighter: { edgeCells, brighter: round(edgeBrighter / Math.max(1, edgeCells)) },
@@ -608,6 +697,11 @@ function failing(o: Observables) {
     if (o.chromaticity.held < 0.99)
         failures.push(`chromaticity held ${o.chromaticity.held} < 0.99`);
     if (o.litInked.inked < 0.999) failures.push(`lit cells inked ${o.litInked.inked} < 0.999`);
+    if (o.fillColour.held < 0.99) failures.push(`fill colour held ${o.fillColour.held} < 0.99`);
+    const density = o.densityFollowsLuma;
+    if (density.held < 0.999) failures.push(`density follows luma ${density.held} < 0.999`);
+    if (!density.denseHalf.cells || density.denseHalf.held < 0.999)
+        failures.push(`dense half held ${density.denseHalf.held} of ${density.denseHalf.cells}`);
     if (o.longestFlatRun > ditherPeriod)
         failures.push(`flat run of ${o.longestFlatRun} > ${ditherPeriod}`);
     if (o.boundaries.coverage < 0.6)
@@ -641,13 +735,18 @@ if (import.meta.main) {
     const plain = decodePng(await Bun.file(plainPath).bytes());
     const frame = observables(image, plain, pitch);
     const failures = failing(frame);
-    // The reviewer's dimmed-ink control must fail, or the observables don't constrain ink.
-    const control = failing(observables(dimControl(image, pitch), plain, pitch));
-    if (!control.length) failures.push("the dimmed-ink control passes");
+    // Each review control must fail, or the observables don't constrain the ink it changes.
+    const controls = {
+        dimmed: failing(observables(dimControl(image, pitch), plain, pitch)),
+        sparse: failing(observables(sparseControl(image, pitch), plain, pitch)),
+        quartered: failing(observables(quarterControl(image), plain, pitch)),
+    };
+    for (const [name, red] of Object.entries(controls))
+        if (!red.length) failures.push(`the ${name} control passes`);
     const statistics = {
         capture: measure(viewport, fitGrid(viewport)),
         frame: measure(image, grid),
     };
-    console.log(JSON.stringify({ observables: frame, failures, control, statistics }, null, 2));
+    console.log(JSON.stringify({ observables: frame, failures, controls, statistics }, null, 2));
     if (failures.length) process.exit(1);
 }
