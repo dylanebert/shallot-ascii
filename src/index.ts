@@ -17,10 +17,19 @@ import {
 } from "@dylanebert/shallot/runtime";
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { createAutoMat, filledBody } from "./filled";
 import { ramp } from "./ramp";
 
+export enum AsciiStyle {
+    Silhouette,
+    Filled,
+}
 /** Opt a camera into bitmap ASCII. cellSize is in physical target pixels, minimum 1. */
-export const Ascii = component("Ascii", { cellSize: u32 }, { defaults: () => ({ cellSize: 8 }) });
+export const Ascii = component(
+    "Ascii",
+    { cellSize: u32, style: u32 },
+    { defaults: () => ({ cellSize: 8, style: AsciiStyle.Silhouette }) },
+);
 
 const layout = tgpu
     .bindGroupLayout({
@@ -30,6 +39,7 @@ const layout = tgpu
             visibility: ["fragment"],
         },
         cellSize: { uniform: d.u32, visibility: ["fragment"] },
+        table: { storage: d.arrayOf(d.u32, 32768), access: "readonly", visibility: ["fragment"] },
     })
     .$idx(0);
 // The reduction renders one pixel per cell, so each source pixel contributes only once.
@@ -78,7 +88,20 @@ const glyphFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, ou
         return glyph(input.position, layout.$.image, layout.$.cellSize);
     },
 );
+const filled = tgpu
+    .fn(
+        [d.vec4f, d.texture2d(d.f32), d.u32],
+        d.vec4f,
+    )(filledBody)
+    .$uses({ layout });
+const filledFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, out: d.vec4f })(
+    (input) => {
+        "use gpu";
+        return filled(input.position, layout.$.image, layout.$.cellSize);
+    },
+);
 interface CameraState {
+    style: number;
     buffer: GPUBuffer;
     bytes: Uint32Array;
     effect: EffectPass;
@@ -89,6 +112,8 @@ const stateKey = {
     create: () => ({
         layout: null as GPUBindGroupLayout | null,
         reduction: null as GPURenderPipeline | null,
+        table: null as GPUBuffer | null,
+        filledPipelines: new Map<GPUTextureFormat, GPURenderPipeline>(),
         pipelines: new Map<GPUTextureFormat, GPURenderPipeline>(),
         cameras: new Map<number, CameraState>(),
         pass: {
@@ -110,6 +135,7 @@ function createCamera(world: World, state: AsciiState): CameraState {
     let glyphGroup: GPUBindGroup;
     const camera: CameraState = {
         buffer,
+        style: AsciiStyle.Silhouette,
         bytes: new Uint32Array(1),
         effect: null!,
         means: null,
@@ -139,6 +165,7 @@ function createCamera(world: World, state: AsciiState): CameraState {
                 entries: [
                     { binding: 0, resource: meanView },
                     { binding: 1, resource: { buffer } },
+                    { binding: 2, resource: { buffer: state.table! } },
                 ],
             });
             groups = new WeakMap();
@@ -150,11 +177,23 @@ function createCamera(world: World, state: AsciiState): CameraState {
                 entries: [
                     { binding: 0, resource: input },
                     { binding: 1, resource: { buffer } },
+                    { binding: 2, resource: { buffer: state.table! } },
                 ],
             });
             groups.set(input, group);
         }
         const attachment = (state.pass.colorAttachments as GPURenderPassColorAttachment[])[0];
+        const format =
+            output === view.present ? navigator.gpu.getPreferredCanvasFormat() : "rgba8unorm";
+        if (camera.style === AsciiStyle.Filled) {
+            attachment.view = output;
+            const pass = beginRenderPass(w.frameEncoder()!, state.pass);
+            setRenderPipeline(pass, state.filledPipelines.get(format)!);
+            setRenderBindGroup(pass, 0, group);
+            draw(pass, 3);
+            endRenderPass(pass);
+            return;
+        }
         attachment.view = meanView;
         let pass = beginRenderPass(w.frameEncoder()!, state.pass);
         setRenderPipeline(pass, state.reduction!);
@@ -163,8 +202,6 @@ function createCamera(world: World, state: AsciiState): CameraState {
         endRenderPass(pass);
         attachment.view = output;
         pass = beginRenderPass(w.frameEncoder()!, state.pass);
-        const format =
-            output === view.present ? navigator.gpu.getPreferredCanvasFormat() : "rgba8unorm";
         setRenderPipeline(pass, state.pipelines.get(format)!);
         setRenderBindGroup(pass, 0, glyphGroup);
         draw(pass, 3);
@@ -214,6 +251,7 @@ export const AsciiPlugin: Plugin = {
                         effects.set(eid, stack);
                     }
                     if (!stack.after.includes(camera.effect)) stack.after.push(camera.effect);
+                    camera.style = world.storage(Ascii).style.get(eid);
                     const size = Math.max(1, world.storage(Ascii).cellSize.get(eid));
                     if (camera.bytes[0] !== size) {
                         camera.bytes[0] = size;
@@ -228,6 +266,11 @@ export const AsciiPlugin: Plugin = {
         const state = world.resource(stateKey);
         const root = world.gpu.root;
         state.layout = root.unwrap(layout);
+        state.table = world.gpu.device.createBuffer({
+            size: 32768 * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        world.gpu.device.queue.writeBuffer(state.table, 0, createAutoMat());
         state.reduction = root.unwrap(
             root.createRenderPipeline({
                 vertex: fullscreenVertex,
@@ -247,6 +290,15 @@ export const AsciiPlugin: Plugin = {
                     targets: { format },
                 }),
             );
+            const filledPipeline = root.unwrap(
+                root.createRenderPipeline({
+                    vertex: fullscreenVertex,
+                    fragment: filledFragment,
+                    targets: { format },
+                }),
+            );
+            state.filledPipelines.set(format, filledPipeline);
+            precompile(world, `ascii-filled-${format}`, () => [filledPipeline]);
             state.pipelines.set(format, pipeline);
             precompile(world, `ascii-${format}`, () => [pipeline]);
         }
@@ -255,6 +307,9 @@ export const AsciiPlugin: Plugin = {
         const state = world.resource(stateKey);
         state.cameras.forEach(disposeCamera, world);
         state.pipelines.clear();
+        state.filledPipelines.clear();
+        state.table?.destroy();
+        state.table = null;
         state.layout = null;
         state.reduction = null;
     },

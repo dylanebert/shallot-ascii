@@ -15,8 +15,9 @@ import { attachTexture, captureTexture } from "@dylanebert/shallot/rendering";
 import { MeshRenderPlugin, StandardRenderingPlugin } from "@dylanebert/shallot/standard/rendering";
 import { TIMEOUT } from "@dylanebert/shallot/testing";
 import { openGpuApp } from "@dylanebert/shallot/testing/gpu";
-import { Ascii, AsciiPlugin } from "../src";
+import { Ascii, AsciiPlugin, AsciiStyle } from "../src";
 import { font } from "../src/font";
+import { filledReference } from "./filled-oracle";
 
 setDefaultTimeout(TIMEOUT.gpu);
 const width = 71,
@@ -144,6 +145,29 @@ test("camera ASCII matches cell means, luma ramp and upright bitmaps including p
         app.world.add(cameras[0], Ascii, { cellSize: size });
         app.world.step(0);
         expect((await captureTexture(app.world, cameras[0])).rgba).toEqual(ascii.rgba);
+    } finally {
+        app.dispose();
+    }
+});
+
+test("Filled matches the independent asciicker table and resolve, cell for cell", async () => {
+    const { app, cameras } = await fixture(true);
+    try {
+        app.world.storage(Ascii).style.set(cameras[0], AsciiStyle.Filled);
+        app.world.step(0);
+        app.world.step(0);
+        const ascii = await captureTexture(app.world, cameras[0]);
+        const plain = await captureTexture(app.world, cameras[1]);
+        const { out, cells } = filledReference(plain.rgba, width, height, size);
+        expect(new Set(cells.map((c) => c.gl)).has(0xdf)).toBe(true);
+        expect(new Set(cells.map((c) => c.gl)).has(0xde)).toBe(true);
+        expect(cells.some((c) => c.gl < 128)).toBe(true);
+        expect(ascii.rgba).toEqual(new Uint8ClampedArray(out));
+        app.world.storage(Ascii).style.set(cameras[0], AsciiStyle.Silhouette);
+        app.world.step(0);
+        const silhouette = await captureTexture(app.world, cameras[0]);
+        const expected = reference(plain.rgba);
+        expect(silhouette.rgba.every((v, i) => Math.abs(v - expected[i]) <= 1)).toBe(true);
     } finally {
         app.dispose();
     }
