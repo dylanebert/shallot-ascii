@@ -18,7 +18,7 @@ bun run lint
 bun run test
 ```
 
-`examples/ascii` is a copied user project: `src/scene` owns the scene and its plugin check; `tests/glyphs.node.ts` checks the composed renderer's coloured 8-pixel glyph cells; `tests/ascii.e2e.ts` captures `ascii.png` through the stepped browser page. Run the example in a scratch copy with a package manifest installing a packed `@dylanebert/shallot-ascii`, published `@dylanebert/shallot@0.10.0`, `vite`, `@playwright/test`, and `webgpu` to check the consumer boundary independently of this workspace.
+`examples/ascii` is a copied user project: `src/scene` owns the scene and its plugin check; `tests/glyphs.node.ts` checks silhouette's coloured ink and blank ground, and filled's two-colour cells on the 6-level RGB cube; `tests/ascii.e2e.ts` captures `ascii-silhouette.png` and `ascii-filled.png` through the stepped browser page, using T to switch styles and back. T also toggles styles in the running example. Run the example in a scratch copy with a package manifest installing a packed `@dylanebert/shallot-ascii`, published `@dylanebert/shallot@0.10.0`, `vite`, `@playwright/test`, and `webgpu` to check the consumer boundary independently of this workspace.
 
 The GPU tests use headless Dawn through Shallot's public GPU testing helper (`webgpu`). On Linux install `mesa-vulkan-drivers` for software Vulkan, as CI does. No browser or window is needed.
 

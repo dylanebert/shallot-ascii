@@ -1,8 +1,10 @@
 import {
     Camera,
     component,
+    Devices,
     DirectionalLight,
     GlobalAmbientLight,
+    InputPlugin,
     lookAtRotation,
     Materials,
     MeshInstance,
@@ -14,7 +16,7 @@ import {
     type World,
 } from "@dylanebert/shallot";
 import { Orbit, OrbitPlugin } from "@dylanebert/shallot/extras";
-import { Ascii, AsciiPlugin } from "@dylanebert/shallot-ascii";
+import { Ascii, AsciiPlugin, AsciiStyle } from "@dylanebert/shallot-ascii";
 
 export const WelcomeCube = component("WelcomeCube", {});
 
@@ -79,10 +81,26 @@ const SpinCube = {
     },
 };
 
+const ToggleStyle = {
+    name: "Welcome/ToggleStyle",
+    update(world: World): void {
+        if (!world.resource(Devices).keys.pressed.has("KeyT")) return;
+        const styles = world.storage(Ascii).style;
+        for (const camera of world.query([Camera, Ascii])) {
+            styles.set(
+                camera,
+                styles.get(camera) === AsciiStyle.Silhouette
+                    ? AsciiStyle.Filled
+                    : AsciiStyle.Silhouette,
+            );
+        }
+    },
+};
+
 export const Welcome: Plugin = {
     name: "Welcome",
     components: [WelcomeCube],
-    dependencies: [OrbitPlugin, AsciiPlugin],
+    dependencies: [OrbitPlugin, AsciiPlugin, InputPlugin],
     initialize: makeScene,
-    systems: [SpinCube],
+    systems: [SpinCube, ToggleStyle],
 };
