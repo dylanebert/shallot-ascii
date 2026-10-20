@@ -1,7 +1,8 @@
-// Measures the ASCII CITY capture and an examples/ascii silhouette frame the same way over
-// each image's cell grid, and fails when the frame falls outside the bounds named from the
-// capture. The frame's grid is its cell size from the origin; the capture's is fitted.
-//   bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> [cellSize=8]
+// Checks a silhouette frame against the frame without Ascii for the ASCII CITY row's
+// observables, and records the capture's image statistics beside the frame's, measured the
+// same way over each image's cell grid; the statistics are the scene's and are not bounded.
+// The frame's grid is its cell size from the origin; the capture's is fitted.
+//   bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> <plain.png> [cellSize=8]
 import { inflateSync } from "node:zlib";
 
 interface Image {
@@ -352,35 +353,6 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
     };
 }
 
-type Measures = ReturnType<typeof measure>;
-// Bounded measures, each the capture's value ±30%. The 10th percentile of pixel ink peaks is
-// recorded only: the capture's antialiased font puts it at glyph-edge pixels a bitmap lacks.
-// Cell peaks, line-cell share and colour-boundary continuity are recorded only: the first
-// is the brightest pixel alone, the second follows the scene's edge-to-area ratio, and the
-// capture draws its boundaries in the face's own colour, so its colour boundaries are mostly
-// window-fill variation, not faces.
-const bounded: [string, (m: Measures) => number][] = [
-    ["inkCoverage", (m) => m.inkCoverage],
-    ["inkPixelPeak p50", (m) => m.inkPixelPeak[1]],
-    ["inkPixelPeak p90", (m) => m.inkPixelPeak[2]],
-    ["fill blank", (m) => m.fill.blank],
-    ["fill sparse", (m) => m.fill.sparse],
-    ["fill dense", (m) => m.fill.dense],
-    ["fillVariation", (m) => m.fillVariation],
-    ["lineRuns", (m) => m.lineRuns],
-];
-function outside(capture: Measures, frame: Measures) {
-    return bounded.flatMap(([name, get]) => {
-        const reference = get(capture),
-            value = get(frame);
-        const low = reference * 0.7,
-            high = Math.min(name === "lineRuns" ? 1 : Infinity, reference * 1.3);
-        return value >= low && value <= high
-            ? []
-            : [`${name} ${value} outside [${round(low)}, ${round(high)}]`];
-    });
-}
-
 // font8x8_box.h tangent lines, keyed by the measure's line kinds.
 const box: Record<number, number[]> = {
     1: [0, 0, 0, 0, 255, 0, 0, 0],
@@ -504,8 +476,142 @@ export function dimControl(image: Image, size: number): Image {
     return { ...image, rgb };
 }
 
-// Coverage bound: crossed boundary cells drawing their tangent line.
-const coverageBound = 0.6;
+// The rule's black point: plain cells under this Rec. 709 luma draw no ink.
+const black = 0.12;
+// Lit: the lowest luma whose dithered ramp index, sqrt((luma - 0.12) / 0.88) * 8 less the
+// dither's 1.4-step reach, stays at least 1, so a lit cell can't dither to blank.
+const lit = 0.2;
+// The 4x4 dither's period: a flat face repeats one glyph at most this many cells in a row.
+const ditherPeriod = 4;
+
+/** The row's observables on our frame, read against the frame without Ascii. */
+export function observables(frame: Image, plain: Image, size: number) {
+    const { width, height } = plain;
+    const I = Math.floor(width / size),
+        J = Math.floor(height / size);
+    const means: number[][] = [],
+        inks: number[][][] = [],
+        glyphs: string[] = [],
+        kinds: number[] = [];
+    for (let j = 0; j < J; j++)
+        for (let i = 0; i < I; i++) {
+            const sum = [0, 0, 0],
+                ink: number[][] = [],
+                rows: number[] = [];
+            for (let y = 0; y < size; y++) {
+                let row = 0;
+                for (let x = 0; x < size; x++) {
+                    const p = ((j * size + y) * width + i * size + x) * 3;
+                    for (let c = 0; c < 3; c++) sum[c] += plain.rgb[p + c];
+                    const rgb = [frame.rgb[p], frame.rgb[p + 1], frame.rgb[p + 2]];
+                    if (rgb[0] + rgb[1] + rgb[2]) {
+                        ink.push(rgb);
+                        row |= 1 << x;
+                    }
+                }
+                rows.push(row);
+            }
+            means.push(sum.map((v) => v / (size * size)));
+            inks.push(ink);
+            glyphs.push(rows.join());
+            kinds.push(
+                Number(Object.keys(box).find((k) => box[Number(k)].join() === rows.join()) ?? 0),
+            );
+        }
+    const luma = (m: number[]) => (m[0] * 0.2126 + m[1] * 0.7152 + m[2] * 0.0722) / 255;
+    const peakOf = (ink: number[][]) => Math.max(0, ...ink.map((p) => Math.max(...p)));
+    let dark = 0,
+        darkInked = 0,
+        inked = 0,
+        chromaHeld = 0,
+        litCells = 0,
+        litInked = 0,
+        longestRun = 0,
+        edgeCells = 0,
+        edgeBrighter = 0;
+    for (let k = 0; k < I * J; k++) {
+        const m = means[k],
+            ink = inks[k];
+        if (luma(m) < black) {
+            dark++;
+            if (ink.length) darkInked++;
+        }
+        if (luma(m) >= lit) {
+            litCells++;
+            if (ink.length) litInked++;
+        }
+        if (!ink.length) continue;
+        inked++;
+        // Every ink pixel is the cell's plain colour scaled: within 1.5 of 255 per channel.
+        const top = Math.max(...m);
+        if (ink.every((p) => p.every((v, c) => Math.abs(v - (m[c] * Math.max(...p)) / top) <= 1.5)))
+            chromaHeld++;
+    }
+    // Flat faces: consecutive lit fill cells whose plain means stay within 2 of the run's first.
+    for (let j = 0; j < J; j++) {
+        let run = 0;
+        for (let i = 0; i < I; i++) {
+            const k = j * I + i,
+                previous = k - 1;
+            const continues =
+                run > 0 &&
+                !kinds[k] &&
+                inks[k].length &&
+                luma(means[k]) >= lit &&
+                glyphs[k] === glyphs[previous] &&
+                means[k].every((v, c) => Math.abs(v - means[k - run][c]) <= 2);
+            run = continues
+                ? run + 1
+                : !kinds[k] && inks[k].length && luma(means[k]) >= lit
+                  ? 1
+                  : 0;
+            longestRun = Math.max(longestRun, run);
+        }
+    }
+    // Edge ink against the brightest neighbouring fill ink.
+    for (let j = 0; j < J; j++)
+        for (let i = 0; i < I; i++) {
+            const k = j * I + i;
+            if (!kinds[k]) continue;
+            let neighbour = -1;
+            for (let dj = -1; dj <= 1; dj++)
+                for (let di = -1; di <= 1; di++) {
+                    const jj = j + dj,
+                        ii = i + di;
+                    if ((dj || di) && jj >= 0 && jj < J && ii >= 0 && ii < I) {
+                        const n = jj * I + ii;
+                        if (!kinds[n] && inks[n].length)
+                            neighbour = Math.max(neighbour, peakOf(inks[n]));
+                    }
+                }
+            if (neighbour < 0) continue;
+            edgeCells++;
+            if (peakOf(inks[k]) >= neighbour) edgeBrighter++;
+        }
+    return {
+        blackGround: { darkCells: dark, inked: darkInked },
+        chromaticity: { inkedCells: inked, held: round(chromaHeld / Math.max(1, inked)) },
+        litInked: { litCells, inked: round(litInked / Math.max(1, litCells)) },
+        longestFlatRun: longestRun,
+        boundaries: boundaryCoverage(frame, plain, size),
+        edgeBrighter: { edgeCells, brighter: round(edgeBrighter / Math.max(1, edgeCells)) },
+    };
+}
+type Observables = ReturnType<typeof observables>;
+function failing(o: Observables) {
+    const failures: string[] = [];
+    if (o.blackGround.inked) failures.push(`${o.blackGround.inked} cells under black draw ink`);
+    if (o.chromaticity.held < 0.99)
+        failures.push(`chromaticity held ${o.chromaticity.held} < 0.99`);
+    if (o.litInked.inked < 0.999) failures.push(`lit cells inked ${o.litInked.inked} < 0.999`);
+    if (o.longestFlatRun > ditherPeriod)
+        failures.push(`flat run of ${o.longestFlatRun} > ${ditherPeriod}`);
+    if (o.boundaries.coverage < 0.6)
+        failures.push(`boundary coverage ${o.boundaries.coverage} < 0.6`);
+    if (o.edgeBrighter.brighter < 0.95)
+        failures.push(`edges brighter ${o.edgeBrighter.brighter} < 0.95`);
+    return failures;
+}
 
 // The capture's game viewport, inside its one-pixel frame at x 40, 956 and y 144, 755.
 export const captureViewport = [42, 146, 955, 755] as const;
@@ -514,27 +620,28 @@ if (import.meta.main) {
     const [capturePath, framePath, plainPath, cellSize = "8"] = process.argv.slice(2);
     if (!capturePath || !framePath || !plainPath) {
         console.error(
-            "usage: bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> <frame-without-ascii.png> [cellSize]",
+            "usage: bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> <plain.png> [cellSize]",
         );
         process.exit(2);
     }
     const capturePng = decodePng(await Bun.file(capturePath).bytes());
     const viewport = crop(capturePng, ...captureViewport);
-    const capture = measure(viewport, fitGrid(viewport));
     const pitch = Number(cellSize);
     const grid: [Grid, Grid] = [
         { pitch, origin: 0 },
         { pitch, origin: 0 },
     ];
     const image = decodePng(await Bun.file(framePath).bytes());
-    const frame = measure(image, grid);
-    const boundaries = boundaryCoverage(image, decodePng(await Bun.file(plainPath).bytes()), pitch);
-    const failures = outside(capture, frame);
-    if (boundaries.coverage < coverageBound)
-        failures.push(`boundary coverage ${boundaries.coverage} under ${coverageBound}`);
-    // The control must fail, or the brightness bounds don't constrain the distribution.
-    const control = outside(capture, measure(dimControl(image, pitch), grid));
-    if (!control.length) failures.push("the dimmed-ink control passes the bounds");
-    console.log(JSON.stringify({ capture, frame, boundaries, control, failures }, null, 2));
+    const plain = decodePng(await Bun.file(plainPath).bytes());
+    const frame = observables(image, plain, pitch);
+    const failures = failing(frame);
+    // The reviewer's dimmed-ink control must fail, or the observables don't constrain ink.
+    const control = failing(observables(dimControl(image, pitch), plain, pitch));
+    if (!control.length) failures.push("the dimmed-ink control passes");
+    const statistics = {
+        capture: measure(viewport, fitGrid(viewport)),
+        frame: measure(image, grid),
+    };
+    console.log(JSON.stringify({ observables: frame, failures, control, statistics }, null, 2));
     if (failures.length) process.exit(1);
 }

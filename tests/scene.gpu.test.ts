@@ -91,34 +91,33 @@ function reference(input: Uint8ClampedArray) {
             const luma = mean[0] * 0.2126 + mean[1] * 0.7152 + mean[2] * 0.0722;
             const strength = (jxx + jyy) / s;
             const angle = (0.5 * Math.atan2(2 * jxy, jxx - jyy)) / (Math.PI / 4);
-            const curve = Math.sqrt(Math.max(0, luma - 0.1) / 0.9);
+            const curve = Math.sqrt(Math.max(0, luma - 0.12) / 0.88);
             const dither = (bayer[((cy / s) % 4) * 4 + ((cx / s) % 4)] + 0.5) / 16 - 0.5;
             const step = curve * glyphs.length + 3 * dither;
             const near = (v: number) => Math.abs(v) < 1e-4;
             if (
-                near(luma - 0.1) ||
-                (luma >= 0.1 && near(strength - gate)) ||
-                (strength > gate && luma >= 0.1 && near(Math.abs(angle % 1) - 0.5)) ||
-                (luma >= 0.1 && strength <= gate && near(step - Math.round(step)))
+                near(luma - 0.12) ||
+                (luma >= 0.12 && near(strength - gate)) ||
+                (strength > gate && luma >= 0.12 && near(Math.abs(angle % 1) - 0.5)) ||
+                (luma >= 0.12 && strength <= gate && near(step - Math.round(step)))
             )
                 ambiguous.push([cx / s, cy / s]);
             let rows: number[] = Array(8).fill(0);
-            if (strength > gate && luma >= 0.1) {
+            let scale = 1;
+            if (strength > gate && luma >= 0.12) {
+                scale = 1 / Math.max(...mean);
                 const edge = ((Math.round(angle) % 4) + 4) % 4;
                 edgesDrawn.push(edge);
                 rows = box[edge];
-            } else if (luma >= 0.1)
+            } else if (luma >= 0.12)
                 rows = glyphs[Math.min(Math.max(Math.floor(step), 0), glyphs.length - 1)].rows;
-            const peak = Math.max(...mean);
             for (let y = cy; y < endY; y++)
                 for (let x = cx; x < endX; x++) {
                     const ink =
                         (rows[Math.floor(((y - cy) * 8) / s)] >> Math.floor(((x - cx) * 8) / s)) &
                         1;
                     for (let c = 0; c < 3; c++)
-                        out[(y * w + x) * 4 + c] = ink
-                            ? Math.round((mean[c] / Math.sqrt(peak)) * 255)
-                            : 0;
+                        out[(y * w + x) * 4 + c] = ink ? Math.round(mean[c] * scale * 255) : 0;
                     out[(y * w + x) * 4 + 3] = 255;
                 }
         }

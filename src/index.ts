@@ -42,8 +42,8 @@ const layout = tgpu
         table: { storage: d.arrayOf(d.u32, 32768), access: "readonly", visibility: ["fragment"] },
     })
     .$idx(0);
-// Rec. 709 luma below black draws blank; the clear colour of examples/ascii sits under it.
-const black = 0.1;
+// Rec. 709 luma below black draws blank. Shallot's 0x191816 clear colour tonemaps to 0.102.
+const black = 0.12;
 // Colour-edge gate: Sobel/4 structure-tensor energy per cell row, about a 0.06 grey step.
 const edgeGate = 0.02;
 // The reduction renders one pixel per cell, so each source pixel contributes only once.
@@ -80,9 +80,9 @@ const mean = tgpu.fn(
     }
     return vec4f(color, edge);
 }`);
-// A cell edge draws its tangent glyph. Otherwise sqrt-curved luma above black, offset by a
-// 4x4 Bayer dither spanning three ramp steps, picks the ramp glyph. Ink carries the cell colour
-// lifted to the square root of its brightest channel.
+// A cell edge draws its tangent glyph in its cell's colour at full brightness, so boundaries
+// stay brighter than fill. Otherwise sqrt-curved luma above black, offset by a 4x4 Bayer
+// dither spanning three ramp steps, picks the ramp glyph, inked in the cell's colour.
 const glyph = tgpu.fn(
     [d.vec4f, d.texture2d(d.f32), d.u32],
     d.vec4f,
@@ -104,7 +104,9 @@ const glyph = tgpu.fn(
     let luma = clamp(dot(color, vec3f(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
     let local = (pixel % size) * 8u / size;
     var row = 0u;
+    var ink = color;
     if (cell.a > 0.5) {
+        ink = color / max(max(color.r, color.g), color.b);
         row = edges[(u32(cell.a) - 1u) * 8u + local.y];
     } else if (luma >= ${black}) {
         let curve = sqrt((luma - ${black}) / ${1 - black});
@@ -112,9 +114,7 @@ const glyph = tgpu.fn(
         let index = u32(clamp(floor(curve * ${ramp.length}.0 + 3.0 * dither), 0.0, ${ramp.length - 1}.0));
         row = rows[index * 8u + local.y];
     }
-    let ink = (row >> local.x) & 1u;
-    let peak = max(max(color.r, color.g), color.b);
-    return vec4f(select(vec3f(0), color / sqrt(peak), ink == 1u && peak > 0.0), 1);
+    return vec4f(select(vec3f(0), ink, ((row >> local.x) & 1u) == 1u), 1);
 }`);
 const meanFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, out: d.vec4f })(
     (input) => {
