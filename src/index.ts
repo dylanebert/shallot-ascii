@@ -44,41 +44,65 @@ const layout = tgpu
     .$idx(0);
 // Rec. 709 luma below black draws blank. Shallot's 0x191816 clear colour tonemaps to 0.102.
 const black = 0.12;
-// Colour-edge gate: Sobel/4 structure-tensor energy per cell row, about a 0.06 grey step.
-const edgeGate = 0.02;
+// Colour-edge gate: the cell's best straight split, among the four drawable tangents, explains
+// at least edgeFit of its colour variance, its sides differ by edgeStep in RGB and each holds a
+// row of pixels. Clutter averages out across any one split; one boundary survives it.
+const edgeFit = 0.56;
+const edgeStep = 0.1;
 // The reduction renders one pixel per cell, so each source pixel contributes only once.
-// Alpha carries the cell's edge: 0 none, else 1 + the quantized gradient angle.
+// Alpha carries the cell's edge: 0 none, else 1 + the edges index of its tangent.
 const mean = tgpu.fn(
     [d.vec4f, d.texture2d(d.f32), d.u32],
     d.vec4f,
 )(`(position: vec4f, image: texture_2d<f32>, cellSize: u32) -> vec4f {
     let size = max(cellSize, 1u);
-    let dims = textureDimensions(image);
-    let last = vec2i(dims) - 1;
     let origin = vec2u(position.xy) * size;
-    let end = min(origin + vec2u(size), dims);
+    let end = min(origin + vec2u(size), textureDimensions(image));
+    // Colour sums and counts by position across each split: columns, rows, x + y, x - y.
+    var bins: array<vec4f, 46>;
     var color = vec3f(0);
-    var j = vec3f(0);
+    var square = 0.0;
     for (var y = origin.y; y < end.y; y++) {
         for (var x = origin.x; x < end.x; x++) {
-            let p = vec2i(i32(x), i32(y));
-            var n: array<vec3f, 9>;
-            for (var k = 0; k < 9; k++) {
-                n[k] = textureLoad(image, clamp(p + vec2i(k % 3 - 1, k / 3 - 1), vec2i(0), last), 0).rgb;
-            }
-            color += n[4];
-            let gx = (n[2] + 2.0 * n[5] + n[8] - n[0] - 2.0 * n[3] - n[6]) * 0.25;
-            let gy = (n[6] + 2.0 * n[7] + n[8] - n[0] - 2.0 * n[1] - n[2]) * 0.25;
-            j += vec3f(dot(gx, gx), dot(gy, gy), dot(gx, gy));
+            let c = textureLoad(image, vec2u(x, y), 0).rgb;
+            color += c;
+            square += dot(c, c);
+            let l = (vec2u(x, y) - origin) * 8u / size;
+            bins[l.x] += vec4f(c, 1);
+            bins[8u + l.y] += vec4f(c, 1);
+            bins[16u + l.x + l.y] += vec4f(c, 1);
+            bins[31u + l.x + 7u - l.y] += vec4f(c, 1);
         }
     }
-    color /= f32((end.x-origin.x)*(end.y-origin.y));
+    let n = f32((end.x - origin.x) * (end.y - origin.y));
+    let m = color / n;
+    let total = max(square - n * dot(m, m), 1e-12);
+    const bases = array<u32, 4>(0u, 8u, 16u, 31u);
+    const lengths = array<u32, 4>(8u, 8u, 15u, 15u);
+    const glyphs = array<f32, 4>(1, 3, 2, 4);
+    var best = 0.0;
+    var contrast = 0.0;
     var edge = 0.0;
-    if ((j.x + j.y) / f32(size) > ${edgeGate} && dot(color, vec3f(0.2126, 0.7152, 0.0722)) >= ${black}) {
-        let angle = 0.5 * atan2(2.0 * j.z, j.x - j.y);
-        edge = f32((i32(round(angle / 0.7853981633974483)) + 4) % 4 + 1);
+    for (var kind = 0u; kind < 4u; kind++) {
+        var side = vec4f(0);
+        for (var t = 0u; t + 1u < lengths[kind]; t++) {
+            side += bins[bases[kind] + t];
+            let other = n - side.w;
+            if (min(side.w, other) < f32(size)) { continue; }
+            let a = side.rgb / side.w;
+            let b = (color - side.rgb) / other;
+            let fit = (side.w * dot(a - m, a - m) + other * dot(b - m, b - m)) / total;
+            if (fit > best) {
+                best = fit;
+                contrast = length(a - b);
+                edge = glyphs[kind];
+            }
+        }
     }
-    return vec4f(color, edge);
+    if (best < ${edgeFit} || contrast < ${edgeStep} || dot(m, vec3f(0.2126, 0.7152, 0.0722)) < ${black}) {
+        edge = 0.0;
+    }
+    return vec4f(m, edge);
 }`);
 // A cell edge draws its tangent glyph in its cell's colour at full brightness, so boundaries
 // stay brighter than fill. Otherwise sqrt-curved luma above black, offset by a 4x4 Bayer

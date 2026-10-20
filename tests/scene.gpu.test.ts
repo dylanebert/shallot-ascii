@@ -23,21 +23,29 @@ setDefaultTimeout(TIMEOUT.gpu);
 const width = 71,
     height = 59,
     size = 9;
-// font8x8_box.h U+2502, U+2571, U+2500, U+2572: tangents of 0°, 45°, 90°, 135° gradients.
+// font8x8_box.h U+2502, U+2571, U+2500, U+2572: vertical, rising, horizontal, falling.
 const box = [
     [0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08],
     [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01],
     [0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00],
     [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
 ];
+// Straight splits of a cell on its 8x8 scaled coordinates, tried in this order: columns,
+// rows, x + y, x - y; each with the box line drawn along it.
+type Project = (x: number, y: number) => number;
+const projections: Project[] = [(x) => x, (_, y) => y, (x, y) => x + y, (x, y) => x - y + 7];
+const splits = projections.map((project, i) => ({
+    project,
+    length: i < 2 ? 8 : 15,
+    glyph: [0, 2, 1, 3][i],
+}));
 const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 // Independent selector, edge gate and bitmap addressing, using only the upstream font data.
 // Cells whose decision lies within float rounding of a threshold are returned as ambiguous.
 function reference(input: Uint8ClampedArray) {
     const w = width,
         h = height,
-        s = size,
-        gate = 0.02;
+        s = size;
     const glyphs = font
         .map((rows, i) => ({
             rows,
@@ -49,70 +57,69 @@ function reference(input: Uint8ClampedArray) {
         }))
         .filter((glyph) => " .:+*XZ0".includes(String.fromCharCode(glyph.i + 32)))
         .sort((a, b) => a.ink - b.ink || a.i - b.i);
-    const at = (x: number, y: number, c: number) =>
-        input[(Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))) * 4 + c] /
-        255;
     const out = new Uint8Array(input.length);
     const ambiguous: [number, number][] = [];
     const edgesDrawn: number[] = [];
+    const near = (v: number) => Math.abs(v) < 1e-4;
     for (let cy = 0; cy < h; cy += s)
         for (let cx = 0; cx < w; cx += s) {
-            const endX = Math.min(cx + s, w),
-                endY = Math.min(cy + s, h);
-            const mean = [0, 0, 0];
-            let jxx = 0,
-                jyy = 0,
-                jxy = 0;
-            for (let y = cy; y < endY; y++)
-                for (let x = cx; x < endX; x++)
-                    for (let c = 0; c < 3; c++) {
-                        mean[c] += at(x, y, c);
-                        const gx =
-                            (at(x + 1, y - 1, c) +
-                                2 * at(x + 1, y, c) +
-                                at(x + 1, y + 1, c) -
-                                at(x - 1, y - 1, c) -
-                                2 * at(x - 1, y, c) -
-                                at(x - 1, y + 1, c)) /
-                            4;
-                        const gy =
-                            (at(x - 1, y + 1, c) +
-                                2 * at(x, y + 1, c) +
-                                at(x + 1, y + 1, c) -
-                                at(x - 1, y - 1, c) -
-                                2 * at(x, y - 1, c) -
-                                at(x + 1, y - 1, c)) /
-                            4;
-                        jxx += gx * gx;
-                        jyy += gy * gy;
-                        jxy += gx * gy;
-                    }
-            for (let c = 0; c < 3; c++) mean[c] /= (endX - cx) * (endY - cy);
+            const pixels: { x: number; y: number; c: number[] }[] = [];
+            for (let y = cy; y < Math.min(cy + s, h); y++)
+                for (let x = cx; x < Math.min(cx + s, w); x++)
+                    pixels.push({
+                        x: Math.floor(((x - cx) * 8) / s),
+                        y: Math.floor(((y - cy) * 8) / s),
+                        c: [0, 1, 2].map((c) => input[(y * w + x) * 4 + c] / 255),
+                    });
+            const average = (set: typeof pixels) =>
+                [0, 1, 2].map((c) => set.reduce((sum, p) => sum + p.c[c], 0) / set.length);
+            const distance2 = (a: number[], b: number[]) =>
+                a.reduce((sum, v, c) => sum + (v - b[c]) ** 2, 0);
+            const mean = average(pixels);
+            const total = pixels.reduce((sum, p) => sum + distance2(p.c, mean), 0);
             const luma = mean[0] * 0.2126 + mean[1] * 0.7152 + mean[2] * 0.0722;
-            const strength = (jxx + jyy) / s;
-            const angle = (0.5 * Math.atan2(2 * jxy, jxx - jyy)) / (Math.PI / 4);
+            let best = 0,
+                second = 0,
+                contrast = 0,
+                edge = -1;
+            for (const { project, length, glyph } of splits)
+                for (let t = 1; t < length; t++) {
+                    const a = pixels.filter((p) => project(p.x, p.y) < t);
+                    const b = pixels.filter((p) => project(p.x, p.y) >= t);
+                    if (Math.min(a.length, b.length) < s) continue;
+                    const ma = average(a),
+                        mb = average(b);
+                    const fit =
+                        (a.length * distance2(ma, mean) + b.length * distance2(mb, mean)) /
+                        Math.max(total, 1e-12);
+                    if (fit > best) {
+                        second = best;
+                        best = fit;
+                        contrast = Math.sqrt(distance2(ma, mb));
+                        edge = glyph;
+                    } else second = Math.max(second, fit);
+                }
+            const isEdge = best >= 0.56 && contrast >= 0.1 && luma >= 0.12;
             const curve = Math.sqrt(Math.max(0, luma - 0.12) / 0.88);
             const dither = (bayer[((cy / s) % 4) * 4 + ((cx / s) % 4)] + 0.5) / 16 - 0.5;
             const step = curve * glyphs.length + 3 * dither;
-            const near = (v: number) => Math.abs(v) < 1e-4;
             if (
                 near(luma - 0.12) ||
-                (luma >= 0.12 && near(strength - gate)) ||
-                (strength > gate && luma >= 0.12 && near(Math.abs(angle % 1) - 0.5)) ||
-                (luma >= 0.12 && strength <= gate && near(step - Math.round(step)))
+                (luma >= 0.12 && (near(best - 0.56) || near(contrast - 0.1))) ||
+                (isEdge && near(best - second)) ||
+                (luma >= 0.12 && !isEdge && near(step - Math.round(step)))
             )
                 ambiguous.push([cx / s, cy / s]);
             let rows: number[] = Array(8).fill(0);
             let scale = 1;
-            if (strength > gate && luma >= 0.12) {
+            if (isEdge) {
                 scale = 1 / Math.max(...mean);
-                const edge = ((Math.round(angle) % 4) + 4) % 4;
                 edgesDrawn.push(edge);
                 rows = box[edge];
             } else if (luma >= 0.12)
                 rows = glyphs[Math.min(Math.max(Math.floor(step), 0), glyphs.length - 1)].rows;
-            for (let y = cy; y < endY; y++)
-                for (let x = cx; x < endX; x++) {
+            for (let y = cy; y < Math.min(cy + s, h); y++)
+                for (let x = cx; x < Math.min(cx + s, w); x++) {
                     const ink =
                         (rows[Math.floor(((y - cy) * 8) / s)] >> Math.floor(((x - cx) * 8) / s)) &
                         1;

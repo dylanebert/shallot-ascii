@@ -362,7 +362,8 @@ const box: Record<number, number[]> = {
 };
 /**
  * Our side only: the cells the frame without Ascii shows crossed by one straight colour
- * boundary, and the share of them drawing the box line of that boundary's tangent. A cell is
+ * boundary; coverage, the share of them drawing the box line of that boundary's tangent; and
+ * precision, the share of box-line cells that are crossed. A cell is
  * crossed when two-means on its colours splits it into sides at least 0.1 apart in RGB, each of
  * at least a row of pixels, that a straight line through the cell separates with at most a
  * tenth of either side misplaced. The capture has no frame without its renderer, so it gives no
@@ -372,7 +373,8 @@ export function boundaryCoverage(frame: Image, plain: Image, size: number) {
     const { width, height } = plain;
     let crossed = 0,
         carried = 0,
-        edgeCells = 0;
+        edgeCells = 0,
+        edgesCrossed = 0;
     for (let cy = 0; cy + size <= height; cy += size)
         for (let cx = 0; cx + size <= width; cx += size) {
             const colours: number[][] = [];
@@ -390,8 +392,9 @@ export function boundaryCoverage(frame: Image, plain: Image, size: number) {
                 return row;
             }).join();
             const kind = Number(Object.keys(box).find((k) => box[Number(k)].join() === drawn) ?? 0);
-            if (kind) edgeCells++;
             const tangent = straightBoundary(colours, size);
+            if (kind) edgeCells++;
+            if (kind && tangent) edgesCrossed++;
             if (!tangent) continue;
             crossed++;
             if (kind === tangent) carried++;
@@ -400,6 +403,7 @@ export function boundaryCoverage(frame: Image, plain: Image, size: number) {
         crossedCells: crossed,
         edgeGlyphCells: edgeCells,
         coverage: round(carried / Math.max(1, crossed)),
+        precision: round(edgesCrossed / Math.max(1, edgeCells)),
     };
 }
 function straightBoundary(colours: number[][], size: number) {
@@ -608,6 +612,8 @@ function failing(o: Observables) {
         failures.push(`flat run of ${o.longestFlatRun} > ${ditherPeriod}`);
     if (o.boundaries.coverage < 0.6)
         failures.push(`boundary coverage ${o.boundaries.coverage} < 0.6`);
+    if (o.boundaries.precision < 0.6)
+        failures.push(`boundary precision ${o.boundaries.precision} < 0.6`);
     if (o.edgeBrighter.brighter < 0.95)
         failures.push(`edges brighter ${o.edgeBrighter.brighter} < 0.95`);
     return failures;
