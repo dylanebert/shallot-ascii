@@ -25,7 +25,7 @@ export enum AsciiStyle {
     Silhouette,
     Filled,
 }
-/** Opt a camera into bitmap ASCII. cellSize is CSS pixels, rounded to whole physical 8px glyph scales; 0 uses the style's reference. */
+/** Opt a camera into bitmap ASCII. cellSize is CSS pixels, rounded to whole physical 8px glyph scales; 0 uses 8 CSS pixels for silhouette, 16 for filled. */
 export const Ascii = component(
     "Ascii",
     { cellSize: u32, style: u32 },
