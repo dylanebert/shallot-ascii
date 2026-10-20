@@ -122,7 +122,10 @@ function bounds(length: number, { pitch, origin }: Grid) {
     return [...edges].sort((a, b) => a - b);
 }
 
-/** Line glyph: 1 horizontal, 2 vertical, 3 diagonal, else 0; ink in a thin band along most of the cell. */
+/**
+ * Line glyph, ink in a thin band along most of the cell: 1 horizontal, 2 vertical, 3 rising
+ * (bottom-left to top-right), 4 falling, else 0.
+ */
 function lineKind(xs: number[], ys: number[], w: number, h: number) {
     if (xs.length < 3) return 0;
     const extent = (v: number[]) => Math.max(...v) - Math.min(...v) + 1;
@@ -136,7 +139,7 @@ function lineKind(xs: number[], ys: number[], w: number, h: number) {
             return Math.abs(sign > 0 ? u - v : u + v - 1);
         });
         if (Math.max(...off) <= 0.25 && distinct(xs) >= 0.6 * w && distinct(ys) >= 0.6 * h)
-            return 3;
+            return sign > 0 ? 4 : 3;
     }
     return 0;
 }
@@ -254,15 +257,7 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
             }
         }
     // Line runs: line cells with a neighbour of the same kind along their tangent.
-    const steps = [
-        [],
-        [[0, 1]],
-        [[1, 0]],
-        [
-            [1, 1],
-            [1, -1],
-        ],
-    ];
+    const steps = [[], [[0, 1]], [[1, 0]], [[1, -1]], [[1, 1]]];
     let lineCells = 0,
         running = 0;
     for (let j = 0; j < J; j++)
@@ -327,6 +322,11 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
                 if (line[j * I + i] || (jj < J && ii < I && line[jj * I + ii])) carried++;
             }
         }
+    const kinds = [1, 2, 3, 4].map((kind) => {
+        let n = 0;
+        for (let k = 0; k < I * J; k++) if (covered[k] && line[k] === kind) n++;
+        return round(n / cells);
+    });
     return {
         grid: { columns: I, rows: J, pitch: [round(gridX.pitch), round(gridY.pitch)] },
         coveredCells: cells,
@@ -340,6 +340,12 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
         },
         fillVariation: round(differing / pairs),
         lineCells: round(lines / cells),
+        lineKinds: {
+            horizontal: kinds[0],
+            vertical: kinds[1],
+            rising: kinds[2],
+            falling: kinds[3],
+        },
         lineRuns: round(running / lineCells),
         colourBoundaries: boundaries,
         boundaryContinuity: round(carried / Math.max(1, boundaries)),
@@ -347,37 +353,24 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
 }
 
 type Measures = ReturnType<typeof measure>;
-// Bounded measures, each the capture's value ±30%. Pixel-level peaks are recorded only: the
-// capture's antialiased font puts its 10th percentile at edge pixels a bitmap glyph lacks.
-// Line-cell share and colour-boundary continuity are recorded only: the first follows the
-// scene's edge-to-area ratio, and the capture draws its boundaries in the face's own colour,
-// so its colour boundaries are mostly window-fill variation, not faces.
+// Bounded measures, each the capture's value ±30%. The 10th percentile of pixel ink peaks is
+// recorded only: the capture's antialiased font puts it at glyph-edge pixels a bitmap lacks.
+// Cell peaks, line-cell share and colour-boundary continuity are recorded only: the first
+// is the brightest pixel alone, the second follows the scene's edge-to-area ratio, and the
+// capture draws its boundaries in the face's own colour, so its colour boundaries are mostly
+// window-fill variation, not faces.
 const bounded: [string, (m: Measures) => number][] = [
     ["inkCoverage", (m) => m.inkCoverage],
-    ["inkCellPeak p50", (m) => m.inkCellPeak[1]],
-    ["inkCellPeak p90", (m) => m.inkCellPeak[2]],
+    ["inkPixelPeak p50", (m) => m.inkPixelPeak[1]],
+    ["inkPixelPeak p90", (m) => m.inkPixelPeak[2]],
+    ["fill blank", (m) => m.fill.blank],
+    ["fill sparse", (m) => m.fill.sparse],
     ["fill dense", (m) => m.fill.dense],
     ["fillVariation", (m) => m.fillVariation],
     ["lineRuns", (m) => m.lineRuns],
 ];
-
-// The capture's game viewport, inside its one-pixel frame at x 40, 956 and y 144, 755.
-export const captureViewport = [42, 146, 955, 755] as const;
-
-if (import.meta.main) {
-    const [capturePath, framePath, cellSize = "8"] = process.argv.slice(2);
-    if (!capturePath || !framePath) {
-        console.error(
-            "usage: bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> [cellSize]",
-        );
-        process.exit(2);
-    }
-    const capturePng = decodePng(await Bun.file(capturePath).bytes());
-    const viewport = crop(capturePng, ...captureViewport);
-    const capture = measure(viewport, fitGrid(viewport));
-    const size = { pitch: Number(cellSize), origin: 0 };
-    const frame = measure(decodePng(await Bun.file(framePath).bytes()), [size, size]);
-    const failures = bounded.flatMap(([name, get]) => {
+function outside(capture: Measures, frame: Measures) {
+    return bounded.flatMap(([name, get]) => {
         const reference = get(capture),
             value = get(frame);
         const low = reference * 0.7,
@@ -386,6 +379,162 @@ if (import.meta.main) {
             ? []
             : [`${name} ${value} outside [${round(low)}, ${round(high)}]`];
     });
-    console.log(JSON.stringify({ capture, frame, failures }, null, 2));
+}
+
+// font8x8_box.h tangent lines, keyed by the measure's line kinds.
+const box: Record<number, number[]> = {
+    1: [0, 0, 0, 0, 255, 0, 0, 0],
+    2: [8, 8, 8, 8, 8, 8, 8, 8],
+    3: [128, 64, 32, 16, 8, 4, 2, 1],
+    4: [1, 2, 4, 8, 16, 32, 64, 128],
+};
+/**
+ * Our side only: the cells the frame without Ascii shows crossed by one straight colour
+ * boundary, and the share of them drawing the box line of that boundary's tangent. A cell is
+ * crossed when two-means on its colours splits it into sides at least 0.1 apart in RGB, each of
+ * at least a row of pixels, that a straight line through the cell separates with at most a
+ * tenth of either side misplaced. The capture has no frame without its renderer, so it gives no
+ * such ground truth.
+ */
+export function boundaryCoverage(frame: Image, plain: Image, size: number) {
+    const { width, height } = plain;
+    let crossed = 0,
+        carried = 0,
+        edgeCells = 0;
+    for (let cy = 0; cy + size <= height; cy += size)
+        for (let cx = 0; cx + size <= width; cx += size) {
+            const colours: number[][] = [];
+            for (let y = 0; y < size; y++)
+                for (let x = 0; x < size; x++) {
+                    const i = ((cy + y) * width + cx + x) * 3;
+                    colours.push([0, 1, 2].map((c) => plain.rgb[i + c] / 255));
+                }
+            const drawn = Array.from({ length: size }, (_, y) => {
+                let row = 0;
+                for (let x = 0; x < size; x++) {
+                    const i = ((cy + y) * width + cx + x) * 3;
+                    if (frame.rgb[i] + frame.rgb[i + 1] + frame.rgb[i + 2]) row |= 1 << x;
+                }
+                return row;
+            }).join();
+            const kind = Number(Object.keys(box).find((k) => box[Number(k)].join() === drawn) ?? 0);
+            if (kind) edgeCells++;
+            const tangent = straightBoundary(colours, size);
+            if (!tangent) continue;
+            crossed++;
+            if (kind === tangent) carried++;
+        }
+    return {
+        crossedCells: crossed,
+        edgeGlyphCells: edgeCells,
+        coverage: round(carried / Math.max(1, crossed)),
+    };
+}
+function straightBoundary(colours: number[][], size: number) {
+    const luma = colours.map((c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722);
+    let a = colours[luma.indexOf(Math.min(...luma))],
+        b = colours[luma.indexOf(Math.max(...luma))];
+    let side: boolean[] = [];
+    for (let iteration = 0; iteration < 8; iteration++) {
+        side = colours.map(
+            (c) =>
+                Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]) <
+                Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]),
+        );
+        const mean = (s: boolean) => {
+            const members = colours.filter((_, i) => side[i] === s);
+            return [0, 1, 2].map((c) => members.reduce((sum, m) => sum + m[c], 0) / members.length);
+        };
+        if (side.every(Boolean) || !side.some(Boolean)) return 0;
+        a = mean(false);
+        b = mean(true);
+    }
+    const minority = Math.min(side.filter(Boolean).length, side.filter((s) => !s).length);
+    if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 0.1 || minority < size) return 0;
+    // The separating line: normal from side a's pixel centroid to side b's, through their midpoint.
+    const centroid = (s: boolean) => {
+        const at = side.flatMap((v, i) => (v === s ? [[i % size, Math.floor(i / size)]] : []));
+        return [0, 1].map((c) => at.reduce((sum, p) => sum + p[c], 0) / at.length);
+    };
+    const ca = centroid(false),
+        cb = centroid(true);
+    const normal = [cb[0] - ca[0], cb[1] - ca[1]];
+    const project = (i: number) => (i % size) * normal[0] + Math.floor(i / size) * normal[1];
+    const projections = side.map((_, i) => project(i));
+    // Best threshold along the normal, then the misplaced share on each side.
+    let best = Infinity;
+    for (const t of projections) {
+        const wrongB = side.filter((s, i) => s && projections[i] < t).length;
+        const wrongA = side.filter((s, i) => !s && projections[i] >= t).length;
+        best = Math.min(
+            best,
+            Math.max(wrongB / side.filter(Boolean).length, wrongA / side.filter((s) => !s).length),
+        );
+    }
+    if (best > 0.1) return 0;
+    // Gradient angle (y down), quantized to 45°; the tangent's line kind.
+    const angle = Math.atan2(normal[1], normal[0]);
+    const step = ((Math.round(angle / (Math.PI / 4)) % 4) + 4) % 4;
+    return [2, 3, 1, 4][step];
+}
+
+/** The reviewer's control: each cell keeps its brightest ink pixel, other ink set to 25 grey. */
+export function dimControl(image: Image, size: number): Image {
+    const rgb = image.rgb.slice();
+    for (let cy = 0; cy < image.height; cy += size)
+        for (let cx = 0; cx < image.width; cx += size) {
+            let brightest = -1,
+                top = -1;
+            for (let y = cy; y < Math.min(cy + size, image.height); y++)
+                for (let x = cx; x < Math.min(cx + size, image.width); x++) {
+                    const i = (y * image.width + x) * 3;
+                    const v = Math.max(rgb[i], rgb[i + 1], rgb[i + 2]);
+                    if (v > inkThreshold && v > top) {
+                        top = v;
+                        brightest = i;
+                    }
+                }
+            for (let y = cy; y < Math.min(cy + size, image.height); y++)
+                for (let x = cx; x < Math.min(cx + size, image.width); x++) {
+                    const i = (y * image.width + x) * 3;
+                    if (i !== brightest && Math.max(rgb[i], rgb[i + 1], rgb[i + 2]) > inkThreshold)
+                        rgb.set([25, 25, 25], i);
+                }
+        }
+    return { ...image, rgb };
+}
+
+// Coverage bound: crossed boundary cells drawing their tangent line.
+const coverageBound = 0.6;
+
+// The capture's game viewport, inside its one-pixel frame at x 40, 956 and y 144, 755.
+export const captureViewport = [42, 146, 955, 755] as const;
+
+if (import.meta.main) {
+    const [capturePath, framePath, plainPath, cellSize = "8"] = process.argv.slice(2);
+    if (!capturePath || !framePath || !plainPath) {
+        console.error(
+            "usage: bun scripts/measure-silhouette.ts <ascii-city-live.png> <frame.png> <frame-without-ascii.png> [cellSize]",
+        );
+        process.exit(2);
+    }
+    const capturePng = decodePng(await Bun.file(capturePath).bytes());
+    const viewport = crop(capturePng, ...captureViewport);
+    const capture = measure(viewport, fitGrid(viewport));
+    const pitch = Number(cellSize);
+    const grid: [Grid, Grid] = [
+        { pitch, origin: 0 },
+        { pitch, origin: 0 },
+    ];
+    const image = decodePng(await Bun.file(framePath).bytes());
+    const frame = measure(image, grid);
+    const boundaries = boundaryCoverage(image, decodePng(await Bun.file(plainPath).bytes()), pitch);
+    const failures = outside(capture, frame);
+    if (boundaries.coverage < coverageBound)
+        failures.push(`boundary coverage ${boundaries.coverage} under ${coverageBound}`);
+    // The control must fail, or the brightness bounds don't constrain the distribution.
+    const control = outside(capture, measure(dimControl(image, pitch), grid));
+    if (!control.length) failures.push("the dimmed-ink control passes the bounds");
+    console.log(JSON.stringify({ capture, frame, boundaries, control, failures }, null, 2));
     if (failures.length) process.exit(1);
 }
