@@ -19,16 +19,17 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import { createAutoMat, filledBody } from "./filled";
 import { edges, ramp } from "./ramp";
+import { cellPixels } from "./sizing";
 
 export enum AsciiStyle {
     Silhouette,
     Filled,
 }
-/** Opt a camera into bitmap ASCII. cellSize is in physical target pixels, minimum 1. */
+/** Opt a camera into bitmap ASCII. cellSize is CSS pixels, rounded to whole physical 8px glyph scales; 0 uses the style's reference. */
 export const Ascii = component(
     "Ascii",
     { cellSize: u32, style: u32 },
-    { defaults: () => ({ cellSize: 8, style: AsciiStyle.Silhouette }) },
+    { defaults: () => ({ cellSize: 0, style: AsciiStyle.Silhouette }) },
 );
 
 const layout = tgpu
@@ -165,6 +166,7 @@ const filledFragment = tgpu.fragmentFn({ in: { position: d.builtin.position }, o
     },
 );
 interface CameraState {
+    sizing: number[];
     style: number;
     buffer: GPUBuffer;
     bytes: Uint32Array;
@@ -199,6 +201,7 @@ function createCamera(world: World, state: AsciiState): CameraState {
     let glyphGroup: GPUBindGroup;
     const camera: CameraState = {
         buffer,
+        sizing: [-1, -1, -1, -1, -1, -1],
         style: AsciiStyle.Silhouette,
         bytes: new Uint32Array(1),
         effect: null!,
@@ -303,7 +306,8 @@ export const AsciiPlugin: Plugin = {
                 const effects = world.resource(EffectPasses);
                 const views = world.resource(Views);
                 for (const eid of world.query(cameras)) {
-                    if (!views.has(eid)) continue;
+                    const view = views.get(eid);
+                    if (!view) continue;
                     let camera = state.cameras.get(eid);
                     if (!camera) {
                         camera = createCamera(world, state);
@@ -316,10 +320,34 @@ export const AsciiPlugin: Plugin = {
                     }
                     if (!stack.after.includes(camera.effect)) stack.after.push(camera.effect);
                     camera.style = world.storage(Ascii).style.get(eid);
-                    const size = Math.max(1, world.storage(Ascii).cellSize.get(eid));
-                    if (camera.bytes[0] !== size) {
-                        camera.bytes[0] = size;
-                        world.gpu.device.queue.writeBuffer(camera.buffer, 0, camera.bytes);
+                    const override = world.storage(Ascii).cellSize.get(eid);
+                    const inputs = camera.sizing;
+                    if (
+                        inputs[0] !== view.width ||
+                        inputs[1] !== view.height ||
+                        inputs[2] !== view.clientWidth ||
+                        inputs[3] !== view.clientHeight ||
+                        inputs[4] !== camera.style ||
+                        inputs[5] !== override
+                    ) {
+                        inputs[0] = view.width;
+                        inputs[1] = view.height;
+                        inputs[2] = view.clientWidth;
+                        inputs[3] = view.clientHeight;
+                        inputs[4] = camera.style;
+                        inputs[5] = override;
+                        const size = cellPixels(
+                            view.width,
+                            view.height,
+                            view.clientWidth,
+                            view.clientHeight,
+                            camera.style,
+                            override,
+                        );
+                        if (camera.bytes[0] !== size) {
+                            camera.bytes[0] = size;
+                            world.gpu.device.queue.writeBuffer(camera.buffer, 0, camera.bytes);
+                        }
                     }
                 }
                 state.cameras.forEach(pruneCamera, world);

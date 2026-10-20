@@ -11,7 +11,7 @@ import {
     TonemappingMethod,
     Transform,
 } from "@dylanebert/shallot";
-import { attachTexture, captureTexture } from "@dylanebert/shallot/rendering";
+import { attachTexture, captureTexture, Views } from "@dylanebert/shallot/rendering";
 import { MeshRenderPlugin, StandardRenderingPlugin } from "@dylanebert/shallot/standard/rendering";
 import { TIMEOUT } from "@dylanebert/shallot/testing";
 import { openGpuApp } from "@dylanebert/shallot/testing/gpu";
@@ -22,7 +22,7 @@ import { filledReference } from "./filled-oracle";
 setDefaultTimeout(TIMEOUT.gpu);
 const width = 71,
     height = 59,
-    size = 9;
+    size = 8;
 // font8x8_box.h U+2502, U+2571, U+2500, U+2572: vertical, rising, horizontal, falling.
 const box = [
     [0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08],
@@ -42,10 +42,9 @@ const splits = projections.map((project, i) => ({
 const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 // Independent selector, edge gate and bitmap addressing, using only the upstream font data.
 // Cells whose decision lies within float rounding of a threshold are returned as ambiguous.
-function reference(input: Uint8ClampedArray) {
+function reference(input: Uint8ClampedArray, s = size) {
     const w = width,
-        h = height,
-        s = size;
+        h = height;
     const glyphs = font
         .map((rows, i) => ({
             rows,
@@ -261,11 +260,11 @@ test("ASCII settings upload only when cellSize changes and draws reuse their des
         writes.mockClear();
         for (let i = 0; i < 4; i++) app.world.step(0);
         expect(settingsWrites()).toHaveLength(0);
-        app.world.storage(Ascii).cellSize.set(cameras[0], size + 1);
+        app.world.storage(Ascii).cellSize.set(cameras[0], size + 8);
         app.world.step(0);
         expect(settingsWrites()).toHaveLength(1);
         expect(settingsWrites()[0][0]).toBe(buffer);
-        expect(Array.from(settingsWrites()[0][2] as Uint32Array)).toEqual([size + 1]);
+        expect(Array.from(settingsWrites()[0][2] as Uint32Array)).toEqual([size + 8]);
         writes.mockClear();
         for (let i = 0; i < 4; i++) app.world.step(0);
         expect(settingsWrites()).toHaveLength(0);
@@ -277,6 +276,41 @@ test("ASCII settings upload only when cellSize changes and draws reuse their des
     } finally {
         passes.mockRestore();
         writes.mockRestore();
+        app.dispose();
+    }
+});
+
+test("ratio-two views draw font texels as 2x2 blocks in both styles", async () => {
+    const { app, cameras } = await fixture(true);
+    try {
+        const view = app.world.resource(Views).get(cameras[0])!;
+        view.clientWidth = width / 2;
+        view.clientHeight = height / 2;
+        for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
+            app.world.storage(Ascii).style.set(cameras[0], style);
+            app.world.step(0);
+            app.world.step(0);
+            const ascii = await captureTexture(app.world, cameras[0]);
+            const plain = await captureTexture(app.world, cameras[1]);
+            const expected =
+                style === AsciiStyle.Filled
+                    ? filledReference(plain.rgba, width, height, 16).out
+                    : reference(plain.rgba, 16).out;
+            expect(ascii.rgba.every((v, i) => Math.abs(v - expected[i]) <= 1)).toBe(true);
+            let transitions = 0;
+            // Exclude partial cells: a full glyph's 64 texels must each be a solid 2x2.
+            for (let y = 0; y < Math.floor(height / 16) * 16; y += 2)
+                for (let x = 0; x < Math.floor(width / 16) * 16; x += 2) {
+                    const at = (y * width + x) * 4;
+                    for (const offset of [4, width * 4, width * 4 + 4])
+                        expect(ascii.rgba.slice(at + offset, at + offset + 4)).toEqual(
+                            ascii.rgba.slice(at, at + 4),
+                        );
+                    if (x % 16 < 14 && ascii.rgba[at] !== ascii.rgba[at + 8]) transitions++;
+                }
+            expect(transitions).toBeGreaterThan(0);
+        }
+    } finally {
         app.dispose();
     }
 });
