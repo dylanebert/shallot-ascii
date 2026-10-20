@@ -29,7 +29,7 @@ function makeScene(world: World): void {
     world.storage(DirectionalLight).shadowMapsEnabled.set(sun, 1);
 
     const camera = world.create();
-    world.add(camera, Camera, { clearColor: 0x191816 });
+    world.add(camera, Camera, { clearColor: 0x171614 });
     world.add(camera, StandardRenderer);
     world.add(camera, Ascii);
     world.add(camera, Orbit, { distance: 6, yaw: 0.7, pitch: 0.4 });

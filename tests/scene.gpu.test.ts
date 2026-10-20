@@ -33,6 +33,7 @@ function reference(input: Uint8ClampedArray) {
                 0,
             ),
         }))
+        .filter((glyph) => " .:-=+*#%@".includes(String.fromCharCode(glyph.i + 32)))
         .sort((a, b) => a.ink - b.ink || a.i - b.i);
     const out = new Uint8Array(input.length);
     for (let cy = 0; cy < height; cy += size)
