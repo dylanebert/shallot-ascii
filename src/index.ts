@@ -21,10 +21,10 @@ import { createAutoMat, filledBody } from "./filled";
 import { edges, ramp } from "./ramp";
 import { cellPixels } from "./sizing";
 
-export enum AsciiStyle {
-    Silhouette,
-    Filled,
-}
+export const AsciiStyle = {
+    Silhouette: 0,
+    Filled: 1,
+} as const;
 /** Opt a camera into bitmap ASCII. cellSize is CSS pixels, rounded to whole physical 8px glyph scales; 0 uses 8 CSS pixels for silhouette, 16 for filled. */
 export const Ascii = component(
     "Ascii",

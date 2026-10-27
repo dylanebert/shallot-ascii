@@ -18,6 +18,7 @@ Silhouette draws coloured glyphs and edge lines on black, after [ASCII CITY](htt
 
 | shallot-ascii | shallot |
 | --- | --- |
+| 0.1.1 | ^0.10.0 |
 | 0.1.0 | ^0.10.0 |
 
 changing it: [`CONTRIBUTING.md`](CONTRIBUTING.md). mit.

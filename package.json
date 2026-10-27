@@ -1,6 +1,6 @@
 {
     "name": "@dylanebert/shallot-ascii",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Camera-local bitmap ASCII post-processing for Shallot.",
     "license": "MIT",
     "author": "Dylan Ebert <dylan.ebert@gmail.com>",
