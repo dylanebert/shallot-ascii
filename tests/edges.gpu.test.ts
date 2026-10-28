@@ -29,7 +29,7 @@ const tangents: Record<number, number[]> = {
     135: [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
 };
 
-// A half-plane of one colour over a clear colour, its edge through the frame at `degrees`,
+// A half-plane of one color over a clear color, its edge through the frame at `degrees`,
 // offset off the cell grid.
 async function boundary(degrees: number) {
     let camera = 0;
@@ -100,7 +100,7 @@ function glyphAt(rgba: Uint8ClampedArray, cx: number, cy: number) {
 }
 
 for (const degrees of [0, 45, 90, 135])
-    test(`a ${degrees}° colour boundary draws one continuous run of its tangent glyph`, async () => {
+    test(`a ${degrees}° color boundary draws one continuous run of its tangent glyph`, async () => {
         const { ascii, plain } = await boundary(degrees);
         const clear = plain.slice(0, 3).join();
         const tangent = tangents[degrees].join();

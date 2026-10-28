@@ -43,10 +43,10 @@ const layout = tgpu
         table: { storage: d.arrayOf(d.u32, 32768), access: "readonly", visibility: ["fragment"] },
     })
     .$idx(0);
-// Rec. 709 luma below black draws blank. Shallot's 0x191816 clear colour tonemaps to 0.102.
+// Rec. 709 luma below black draws blank. Shallot's 0x191816 clear color tonemaps to 0.102.
 const black = 0.12;
-// Colour-edge gate: the cell's best straight split, among the four drawable tangents, explains
-// at least edgeFit of its colour variance, its sides differ by edgeStep in RGB and each holds a
+// Color-edge gate: the cell's best straight split, among the four drawable tangents, explains
+// at least edgeFit of its color variance, its sides differ by edgeStep in RGB and each holds a
 // row of pixels. Clutter averages out across any one split; one boundary survives it.
 const edgeFit = 0.56;
 const edgeStep = 0.1;
@@ -59,7 +59,7 @@ const mean = tgpu.fn(
     let size = max(cellSize, 1u);
     let origin = vec2u(position.xy) * size;
     let end = min(origin + vec2u(size), textureDimensions(image));
-    // Colour sums and counts by position across each split: columns, rows, x + y, x - y.
+    // Color sums and counts by position across each split: columns, rows, x + y, x - y.
     var bins: array<vec4f, 46>;
     var color = vec3f(0);
     var square = 0.0;
@@ -105,9 +105,9 @@ const mean = tgpu.fn(
     }
     return vec4f(m, edge);
 }`);
-// A cell edge draws its tangent glyph in its cell's colour at full brightness, so boundaries
+// A cell edge draws its tangent glyph in its cell's color at full brightness, so boundaries
 // stay brighter than fill. Otherwise sqrt-curved luma above black, offset by a 4x4 Bayer
-// dither spanning three ramp steps, picks the ramp glyph, inked in the cell's colour.
+// dither spanning three ramp steps, picks the ramp glyph, inked in the cell's color.
 const glyph = tgpu.fn(
     [d.vec4f, d.texture2d(d.f32), d.u32],
     d.vec4f,

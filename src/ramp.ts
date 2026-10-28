@@ -11,7 +11,7 @@ export const ramp = font
     .sort((a, b) => a.ink - b.ink || a.char.charCodeAt(0) - b.char.charCodeAt(0));
 
 // font8x8_box.h U+2502, U+2571, U+2500, U+2572, indexed by quantized gradient angle
-// 0°, 45°, 90°, 135° (y down): the tangent glyph of each colour edge.
+// 0°, 45°, 90°, 135° (y down): the tangent glyph of each color edge.
 export const edges = [
     [8, 8, 8, 8, 8, 8, 8, 8],
     [128, 64, 32, 16, 8, 4, 2, 1],

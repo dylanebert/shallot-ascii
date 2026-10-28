@@ -199,7 +199,7 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
             density[k] = xs.length / Math.max(1, w * h);
             cellPeak[k] = top;
             line[k] = lineKind(xs, ys, w, h);
-            // Core colour: ink at least half the cell's peak, as chromaticity.
+            // Core color: ink at least half the cell's peak, as chromaticity.
             const sum = [0, 0, 0];
             for (let n = 0; n < xs.length; n++) {
                 const p = (yb[j] + ys[n]) * width + xb[i] + xs[n];
@@ -258,7 +258,7 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
                 if (Math.abs(density[a] - density[a + 1]) >= 0.1) differing++;
             }
         }
-    // Line runs: line cells with a neighbour of the same kind along their tangent.
+    // Line runs: line cells with a neighbor of the same kind along their tangent.
     const steps = [[], [[0, 1]], [[1, 0]], [[1, -1]], [[1, 1]]];
     let lineCells = 0,
         running = 0;
@@ -276,7 +276,7 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
             );
             if (runs) running++;
         }
-    // Colour boundaries read from the drawn image: the median chromaticity of three inked fill
+    // Color boundaries read from the drawn image: the median chromaticity of three inked fill
     // cells on each side differs by more than 0.25; carried when either cell at it is a line.
     const median = (cells: number[]) => {
         if (cells.length < 2) return null;
@@ -349,7 +349,7 @@ export function measure(image: Image, [gridX, gridY]: [Grid, Grid]) {
             falling: kinds[3],
         },
         lineRuns: round(running / lineCells),
-        colourBoundaries: boundaries,
+        colorBoundaries: boundaries,
         boundaryContinuity: round(carried / Math.max(1, boundaries)),
     };
 }
@@ -362,10 +362,10 @@ const box: Record<number, number[]> = {
     4: [1, 2, 4, 8, 16, 32, 64, 128],
 };
 /**
- * Our side only: the cells the frame without Ascii shows crossed by one straight colour
+ * Our side only: the cells the frame without Ascii shows crossed by one straight color
  * boundary; coverage, the share of them drawing the box line of that boundary's tangent; and
  * precision, the share of box-line cells that are crossed. A cell is
- * crossed when two-means on its colours splits it into sides at least 0.1 apart in RGB, each of
+ * crossed when two-means on its colors splits it into sides at least 0.1 apart in RGB, each of
  * at least a row of pixels, that a straight line through the cell separates with at most a
  * tenth of either side misplaced. The capture has no frame without its renderer, so it gives no
  * such ground truth.
@@ -378,11 +378,11 @@ export function boundaryCoverage(frame: Image, plain: Image, size: number) {
         edgesCrossed = 0;
     for (let cy = 0; cy + size <= height; cy += size)
         for (let cx = 0; cx + size <= width; cx += size) {
-            const colours: number[][] = [];
+            const colors: number[][] = [];
             for (let y = 0; y < size; y++)
                 for (let x = 0; x < size; x++) {
                     const i = ((cy + y) * width + cx + x) * 3;
-                    colours.push([0, 1, 2].map((c) => plain.rgb[i + c] / 255));
+                    colors.push([0, 1, 2].map((c) => plain.rgb[i + c] / 255));
                 }
             const drawn = Array.from({ length: size }, (_, y) => {
                 let row = 0;
@@ -393,7 +393,7 @@ export function boundaryCoverage(frame: Image, plain: Image, size: number) {
                 return row;
             }).join();
             const kind = Number(Object.keys(box).find((k) => box[Number(k)].join() === drawn) ?? 0);
-            const tangent = straightBoundary(colours, size);
+            const tangent = straightBoundary(colors, size);
             if (kind) edgeCells++;
             if (kind && tangent) edgesCrossed++;
             if (!tangent) continue;
@@ -407,19 +407,19 @@ export function boundaryCoverage(frame: Image, plain: Image, size: number) {
         precision: round(edgesCrossed / Math.max(1, edgeCells)),
     };
 }
-function straightBoundary(colours: number[][], size: number) {
-    const luma = colours.map((c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722);
-    let a = colours[luma.indexOf(Math.min(...luma))],
-        b = colours[luma.indexOf(Math.max(...luma))];
+function straightBoundary(colors: number[][], size: number) {
+    const luma = colors.map((c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722);
+    let a = colors[luma.indexOf(Math.min(...luma))],
+        b = colors[luma.indexOf(Math.max(...luma))];
     let side: boolean[] = [];
     for (let iteration = 0; iteration < 8; iteration++) {
-        side = colours.map(
+        side = colors.map(
             (c) =>
                 Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]) <
                 Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]),
         );
         const mean = (s: boolean) => {
-            const members = colours.filter((_, i) => side[i] === s);
+            const members = colors.filter((_, i) => side[i] === s);
             return [0, 1, 2].map((c) => members.reduce((sum, m) => sum + m[c], 0) / members.length);
         };
         if (side.every(Boolean) || !side.some(Boolean)) return 0;
@@ -457,7 +457,7 @@ function straightBoundary(colours: number[][], size: number) {
 
 /**
  * Second review's controls. Sparse: every inked fill cell becomes two pixels in its own ink
- * colour, placed by cell position. Quartered: every channel divided by four.
+ * color, placed by cell position. Quartered: every channel divided by four.
  */
 export function sparseControl(image: Image, size: number): Image {
     const rgb = image.rgb.slice();
@@ -465,19 +465,19 @@ export function sparseControl(image: Image, size: number): Image {
     for (let cy = 0; cy + size <= image.height; cy += size)
         for (let cx = 0; cx + size <= image.width; cx += size) {
             const rows: number[] = [];
-            let colour: number[] | undefined;
+            let color: number[] | undefined;
             for (let y = 0; y < size; y++) {
                 let row = 0;
                 for (let x = 0; x < size; x++) {
                     const p = ((cy + y) * image.width + cx + x) * 3;
                     if (rgb[p] + rgb[p + 1] + rgb[p + 2]) {
                         row |= 1 << x;
-                        colour = [rgb[p], rgb[p + 1], rgb[p + 2]];
+                        color = [rgb[p], rgb[p + 1], rgb[p + 2]];
                     }
                 }
                 rows.push(row);
             }
-            if (!colour || boxes.includes(rows.join())) continue;
+            if (!color || boxes.includes(rows.join())) continue;
             for (let y = 0; y < size; y++)
                 rgb.fill(
                     0,
@@ -490,7 +490,7 @@ export function sparseControl(image: Image, size: number): Image {
                 [x, y],
                 [x + 4, y + 4],
             ])
-                rgb.set(colour, ((cy + py) * image.width + cx + px) * 3);
+                rgb.set(color, ((cy + py) * image.width + cx + px) * 3);
         }
     return { ...image, rgb };
 }
@@ -498,7 +498,7 @@ export function quarterControl(image: Image): Image {
     return { ...image, rgb: image.rgb.map((v) => v >> 2) };
 }
 
-/** The reviewer's control: each cell keeps its brightest ink pixel, other ink set to 25 grey. */
+/** The reviewer's control: each cell keeps its brightest ink pixel, other ink set to 25 gray. */
 export function dimControl(image: Image, size: number): Image {
     const rgb = image.rgb.slice();
     for (let cy = 0; cy < image.height; cy += size)
@@ -542,9 +542,9 @@ const guaranteedInk = (l: number) => {
     while (k + 1 < ramp.length && l >= lumaFor(k + 1)) k++;
     return ramp[k].ink / 64;
 };
-// Fill ink is the cell's plain mean colour: within 1.5 of 255 per channel, the output's rounding
+// Fill ink is the cell's plain mean color: within 1.5 of 255 per channel, the output's rounding
 // and float headroom.
-const colourTolerance = 1.5;
+const colorTolerance = 1.5;
 const ditherPeriod = 4;
 
 /** The row's observables on our frame, read against the frame without Ascii. */
@@ -593,7 +593,7 @@ export function observables(frame: Image, plain: Image, size: number) {
         edgeCells = 0,
         edgeBrighter = 0,
         fillCells = 0,
-        fillColourHeld = 0,
+        fillColorHeld = 0,
         denseCells = 0,
         denseHeld = 0,
         gradedCells = 0,
@@ -622,10 +622,10 @@ export function observables(frame: Image, plain: Image, size: number) {
         inked++;
         if (!kinds[k]) {
             fillCells++;
-            if (ink.every((p) => p.every((v, c) => Math.abs(v - m[c]) <= colourTolerance)))
-                fillColourHeld++;
+            if (ink.every((p) => p.every((v, c) => Math.abs(v - m[c]) <= colorTolerance)))
+                fillColorHeld++;
         }
-        // Every ink pixel is the cell's plain colour scaled: within 1.5 of 255 per channel.
+        // Every ink pixel is the cell's plain color scaled: within 1.5 of 255 per channel.
         const top = Math.max(...m);
         if (ink.every((p) => p.every((v, c) => Math.abs(v - (m[c] * Math.max(...p)) / top) <= 1.5)))
             chromaHeld++;
@@ -651,12 +651,12 @@ export function observables(frame: Image, plain: Image, size: number) {
             longestRun = Math.max(longestRun, run);
         }
     }
-    // Edge ink against the brightest neighbouring fill ink.
+    // Edge ink against the brightest neighboring fill ink.
     for (let j = 0; j < J; j++)
         for (let i = 0; i < I; i++) {
             const k = j * I + i;
             if (!kinds[k]) continue;
-            let neighbour = -1;
+            let neighbor = -1;
             for (let dj = -1; dj <= 1; dj++)
                 for (let di = -1; di <= 1; di++) {
                     const jj = j + dj,
@@ -664,18 +664,18 @@ export function observables(frame: Image, plain: Image, size: number) {
                     if ((dj || di) && jj >= 0 && jj < J && ii >= 0 && ii < I) {
                         const n = jj * I + ii;
                         if (!kinds[n] && inks[n].length)
-                            neighbour = Math.max(neighbour, peakOf(inks[n]));
+                            neighbor = Math.max(neighbor, peakOf(inks[n]));
                     }
                 }
-            if (neighbour < 0) continue;
+            if (neighbor < 0) continue;
             edgeCells++;
-            if (peakOf(inks[k]) >= neighbour) edgeBrighter++;
+            if (peakOf(inks[k]) >= neighbor) edgeBrighter++;
         }
     return {
         blackGround: { darkCells: dark, inked: darkInked },
         chromaticity: { inkedCells: inked, held: round(chromaHeld / Math.max(1, inked)) },
         litInked: { litCells, inked: round(litInked / Math.max(1, litCells)) },
-        fillColour: { fillCells, held: round(fillColourHeld / Math.max(1, fillCells)) },
+        fillColor: { fillCells, held: round(fillColorHeld / Math.max(1, fillCells)) },
         densityFollowsLuma: {
             litFillCells: gradedCells,
             held: round(gradedHeld / Math.max(1, gradedCells)),
@@ -697,7 +697,7 @@ function failing(o: Observables) {
     if (o.chromaticity.held < 0.99)
         failures.push(`chromaticity held ${o.chromaticity.held} < 0.99`);
     if (o.litInked.inked < 0.999) failures.push(`lit cells inked ${o.litInked.inked} < 0.999`);
-    if (o.fillColour.held < 0.99) failures.push(`fill colour held ${o.fillColour.held} < 0.99`);
+    if (o.fillColor.held < 0.99) failures.push(`fill color held ${o.fillColor.held} < 0.99`);
     const density = o.densityFollowsLuma;
     if (density.held < 0.999) failures.push(`density follows luma ${density.held} < 0.999`);
     if (!density.denseHalf.cells || density.denseHalf.held < 0.999)

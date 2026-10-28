@@ -14,7 +14,7 @@ world.add(camera, Ascii, { style: AsciiStyle.Filled });
 
 See [`examples/ascii`](examples/ascii).
 
-Silhouette draws coloured glyphs and edge lines on black, after [ASCII CITY](https://ascii-city-p1-k7m4k5.grownowgames.workers.dev/); filled paints every cell, after [asciicker](https://github.com/msokalski/asciicker). `cellSize` is in CSS pixels; `0` picks 8 for silhouette and 16 for filled. Glyphs are font8x8 (public domain). No terminal output.
+Silhouette draws colored glyphs and edge lines on black, after [ASCII CITY](https://ascii-city-p1-k7m4k5.grownowgames.workers.dev/); filled paints every cell, after [asciicker](https://github.com/msokalski/asciicker). `cellSize` is in CSS pixels; `0` picks 8 for silhouette and 16 for filled. Glyphs are font8x8 (public domain). No terminal output.
 
 | shallot-ascii | shallot |
 | --- | --- |

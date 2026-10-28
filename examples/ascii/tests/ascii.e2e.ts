@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
-test("the package presents coloured ASCII ink over black", async ({ page }, info) => {
+test("the package presents colored ASCII ink over black", async ({ page }, info) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto("/tests/stepped.html");

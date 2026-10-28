@@ -8,7 +8,7 @@ import { Welcome } from "../src/scene";
 
 setDefaultTimeout(TIMEOUT.node);
 for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
-    test(`the composed scene holds style ${style}'s coloured 8-pixel cells`, async () => {
+    test(`the composed scene holds style ${style}'s colored 8-pixel cells`, async () => {
         const app = await openGpuApp({ plugins: [Welcome] });
         try {
             const camera = [...app.world.query([Camera])][0];
@@ -24,12 +24,12 @@ for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
             let blankGround = 0;
             let glyphs = 0;
             let orange = 0;
-            let cubeColours = 0;
-            let nonCubeColours = 0;
-            let twoColourCells = 0;
+            let cubeColors = 0;
+            let nonCubeColors = 0;
+            let twoColorCells = 0;
             for (let cy = 0; cy < height; cy += 8) {
                 for (let cx = 0; cx < width; cx += 8) {
-                    const colours = new Set<string>();
+                    const colors = new Set<string>();
                     let black = 0;
                     let clearPixels = 0;
                     for (let y = cy; y < cy + 8; y++) {
@@ -40,29 +40,29 @@ for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
                                 clearPixels++;
                             if (r + g + b === 0) black++;
                             else {
-                                colours.add(`${r},${g},${b}`);
-                                if ([r, g, b].every((v) => v % 51 === 0)) cubeColours++;
-                                else nonCubeColours++;
+                                colors.add(`${r},${g},${b}`);
+                                if ([r, g, b].every((v) => v % 51 === 0)) cubeColors++;
+                                else nonCubeColors++;
                             }
                             if (r > g * 1.2 && g > b * 1.2) orange++;
                         }
                     }
-                    if (colours.size === 2) twoColourCells++;
+                    if (colors.size === 2) twoColorCells++;
                     if (clearPixels === 64 && style === AsciiStyle.Silhouette) {
                         expect(black).toBe(64);
                         blankGround++;
                     }
-                    if (black > 0 && black < 64 && colours.size === 1) glyphs++;
+                    if (black > 0 && black < 64 && colors.size === 1) glyphs++;
                 }
             }
             if (style === AsciiStyle.Silhouette) {
                 expect(blankGround).toBeGreaterThan(100);
                 expect(glyphs).toBeGreaterThan(100);
-                expect(nonCubeColours).toBeGreaterThan(100);
+                expect(nonCubeColors).toBeGreaterThan(100);
             } else {
-                expect(cubeColours).toBeGreaterThan(1000);
-                expect(nonCubeColours).toBe(0);
-                expect(twoColourCells).toBeGreaterThan(100);
+                expect(cubeColors).toBeGreaterThan(1000);
+                expect(nonCubeColors).toBe(0);
+                expect(twoColorCells).toBeGreaterThan(100);
             }
             expect(orange).toBeGreaterThan(100);
         } finally {

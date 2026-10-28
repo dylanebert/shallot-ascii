@@ -62,7 +62,7 @@ export function createAutoMat() {
     return mat;
 }
 
-// Samples are the centres of the cell's quadrants, clamped at partial edges.
+// Samples are the centers of the cell's quadrants, clamped at partial edges.
 // Upstream's sample rows run bottom-up. Its lighting/reflection has already
 // happened at this after-tonemapping boundary; RGB555 conversion remains.
 export const filledBody = `(position: vec4f, image: texture_2d<f32>, cellSize: u32) -> vec4f {
