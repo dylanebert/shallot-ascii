@@ -23,4 +23,7 @@ jobs:
       - run: bun run lint
       - name: Install software Vulkan device
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - name: Identify adapter
+        run: |
+          node -e "import('webgpu').then(({ create, globals }) => { Object.assign(globalThis, globals); return create([]).requestAdapter(); }).then(async (adapter) => { if (!adapter) throw new Error('WebGPU adapter unavailable'); const info = adapter.info; (await adapter.requestDevice()).destroy(); console.info('WebGPU adapter:', [info.vendor, info.architecture, info.device, info.description].join(' ')); })"
       - run: bun run test
