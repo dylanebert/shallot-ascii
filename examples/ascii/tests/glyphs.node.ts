@@ -8,7 +8,8 @@ import { Welcome } from "../src/scene";
 
 setDefaultTimeout(TIMEOUT.node);
 for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
-    test(`the composed scene holds style ${style}'s colored 8-pixel cells`, async () => {
+    test(`the composed scene holds style ${style}'s colored cells at its default size`, async () => {
+        const cell = style === AsciiStyle.Filled ? 16 : 8;
         const app = await openGpuApp({ plugins: [Welcome] });
         try {
             const camera = [...app.world.query([Camera])][0];
@@ -27,13 +28,13 @@ for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
             let cubeColors = 0;
             let nonCubeColors = 0;
             let twoColorCells = 0;
-            for (let cy = 0; cy < height; cy += 8) {
-                for (let cx = 0; cx < width; cx += 8) {
+            for (let cy = 0; cy < height; cy += cell) {
+                for (let cx = 0; cx < width; cx += cell) {
                     const colors = new Set<string>();
                     let black = 0;
                     let clearPixels = 0;
-                    for (let y = cy; y < cy + 8; y++) {
-                        for (let x = cx; x < cx + 8; x++) {
+                    for (let y = cy; y < cy + cell; y++) {
+                        for (let x = cx; x < cx + cell; x++) {
                             const i = (y * width + x) * 4;
                             const [r, g, b] = rgba.slice(i, i + 3);
                             if (clear.every((value, c) => Math.abs(plain.rgba[i + c] - value) <= 2))
@@ -48,11 +49,11 @@ for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
                         }
                     }
                     if (colors.size === 2) twoColorCells++;
-                    if (clearPixels === 64 && style === AsciiStyle.Silhouette) {
-                        expect(black).toBe(64);
+                    if (clearPixels === cell * cell && style === AsciiStyle.Silhouette) {
+                        expect(black).toBe(cell * cell);
                         blankGround++;
                     }
-                    if (black > 0 && black < 64 && colors.size === 1) glyphs++;
+                    if (black > 0 && black < cell * cell && colors.size === 1) glyphs++;
                 }
             }
             if (style === AsciiStyle.Silhouette) {
@@ -62,7 +63,7 @@ for (const style of [AsciiStyle.Silhouette, AsciiStyle.Filled]) {
             } else {
                 expect(cubeColors).toBeGreaterThan(1000);
                 expect(nonCubeColors).toBe(0);
-                expect(twoColorCells).toBeGreaterThan(100);
+                expect(twoColorCells).toBeGreaterThan(((width / cell) * (height / cell)) / 12);
             }
             expect(orange).toBeGreaterThan(100);
         } finally {

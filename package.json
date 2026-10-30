@@ -29,7 +29,7 @@
     ],
     "scripts": {
         "lint": "biome check",
-        "test": "bun test"
+        "test": "bun test && bun test ./examples/ascii/tests/glyphs.node.ts"
     },
     "peerDependencies": {
         "@dylanebert/shallot": "^0.10.0",
